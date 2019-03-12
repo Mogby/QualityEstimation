@@ -1,7 +1,8 @@
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+
+from pytorch_pretrained_bert import BertModel
 
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
@@ -109,3 +110,18 @@ class EstimatorRNN(nn.Module):
     )
 
     return output, align, self_align
+
+
+class BertQE(nn.Module):
+  def __init__(self, bert_hidden_size=768):
+    super(BertQE, self).__init__()
+
+    self._bert = BertModel.from_pretrained('bert-base-multilingual-cased')
+    self._out = nn.Linear(bert_hidden_size, 2)
+    self._softmax = nn.LogSoftmax(dim=2)
+
+  def forward(self, input_ids, seg_ids):
+    bert_out, _ = self._bert(input_ids, seg_ids,
+                             output_all_encoded_layers=False)
+    out = self._out(bert_out)
+    return self._softmax(out)
