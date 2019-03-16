@@ -39,7 +39,7 @@ if [ ! -d "$EMBEDDINGS_EN_DEST" ]; then
     curl $EMBEDDINGS_EN_URL -o $EMBEDDINGS_EN_TEMP
     mkdir -p $EMBEDDINGS_EN_DEST
     echo Extracting...
-    unzip $EMBEDDINGS_EN_TEMP -qq -d $EMBEDDINGS_EN_DEST
+    unzip -qq $EMBEDDINGS_EN_TEMP -d $EMBEDDINGS_EN_DEST
 else
     echo Skipping English embeddings...
 fi
@@ -53,7 +53,7 @@ if [ ! -d "$EMBEDDINGS_DE_DEST" ]; then
     curl $EMBEDDINGS_DE_URL -o $EMBEDDINGS_DE_TEMP
     mkdir -p $EMBEDDINGS_DE_DEST
     echo Extracting...
-    unzip $EMBEDDINGS_DE_TEMP -qq -d $EMBEDDINGS_DE_DEST
+    unzip -qq $EMBEDDINGS_DE_TEMP -d $EMBEDDINGS_DE_DEST
 else
     echo Skipping German embeddings...
 fi
