@@ -1,32 +1,28 @@
+import pickle
+
 import numpy as np
 
 
-UNK_IDX = -1
+PAD_TOKEN = -1
+UNK_TOKEN = -2
 
 
 class Tokenizer:
 
-  def __init__(self, glove_file):
-    self._word2idx = {}
-    self._idx2word = []
-    self._embeddings = []
+  def __init__(self, embeddings_file):
+    embeddings = pickle.load(embeddings_file)
 
-    for i, line in enumerate(glove_file):
-      tokens = line.split()
-      word = tokens[0]
-      embedding = [float(coord) for coord in tokens[1:]]
-      self._word2idx[word] = i
-      self._idx2word.append(word)
-      self._embeddings.append(embedding)
+    self._word2idx = embeddings['word2idx']
+    self._idx2word = embeddings['idx2word'] + ['[UNK]'] + ['[PAD]']
+    self._embeddings = np.asarray(embeddings['idx2vec'], dtype=np.float32)
 
-    self._idx2word.append('[UNK]')
+  def tokenize(self, text):
+    return text.split()
 
-    self._embeddings = np.array(self._embeddings, dtype=np.float32)
-
-  def tokenize_sentence(self, sentence):
+  def convert_tokens_to_ids(self, tokens):
     return list(map(
-      lambda word: self._word2idx.get(word.lower(), UNK_IDX),
-      sentence.split()
+      lambda word: self._word2idx.get(word.lower(), UNK_TOKEN),
+      tokens
     ))
 
   def tokens_to_sentence(self, tokens):

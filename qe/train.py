@@ -1,51 +1,88 @@
 import os
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 
 from tqdm import tqdm
+from sklearn.metrics import f1_score
 
-def train_epochs(dataloader, estimator, n_epochs, validator=None,
-                 validate_every=5, batch_size=100, learning_rate=0.1,
-                 save_dir=None):
-  optimizer = optim.Adadelta(estimator.parameters(), lr=learning_rate)
 
-  criterion = nn.NLLLoss()
+def validate(val_loader, model):
+  with torch.no_grad():
+    src_preds = []
+    word_preds = []
+    gap_preds = []
 
+    src_truths = []
+    word_truths = []
+    gap_truths = []
+
+    for batch in tqdm(val_loader):
+      src_mask = batch['src_tags'] >= 0
+      word_mask = batch['word_tags'] >= 0
+      gap_mask = batch['gap_tags'] >= 0
+      src_pred, mt_pred = model.predict(batch['src'], batch['mt'])
+
+      src_preds.append(src_pred[src_mask].cpu().numpy())
+      word_preds.append(mt_pred[1::2][word_mask].cpu().numpy())
+      gap_preds.append(mt_pred[::2][gap_mask].cpu().numpy())
+
+      src_truths.append(batch['src_tags'][src_mask].cpu().numpy())
+      word_truths.append(batch['word_tags'][word_mask].cpu().numpy())
+      gap_truths.append(batch['gap_tags'][gap_mask].cpu().numpy())
+
+    scores = {
+      'src': (src_preds, src_truths),
+      'word': (word_preds, word_truths),
+      'gap': (gap_preds, gap_truths),
+    }
+
+    for token, (preds, truths) in scores.items():
+      f1_bad, f1_ok = f1_score(np.concatenate(preds),
+                               np.concatenate(truths),
+                               average=None)
+      scores[token] = {
+        'f1_ok': f1_ok,
+        'f1_bad': f1_bad,
+        'mul': f1_ok * f1_bad,
+      }
+
+    return scores
+
+
+def train(train_loader, val_loader, model, optimizer, n_epochs,
+          validate_every=5, save_dir=None):
   loss_hist = []
   for epoch in range(n_epochs):
     print(f'Epoch {epoch+1}')
-    loss = 0
     epoch_loss = 0
-    for iter, sample in enumerate(tqdm(dataloader)):
-      src, mt, tags = sample['src'], sample['mt'], sample['tags']
+    for batch in tqdm(train_loader):
+      loss = model.loss(**batch)
+      epoch_loss += loss.item()
 
-      pred, _, _ = estimator(src[0], mt[0], training=True)
-      iter_loss = criterion(pred[0], tags[0])
+      optimizer.zero_grad()
+      loss.backward()
+      optimizer.step()
 
-      loss += iter_loss
-
-      if (iter + 1) % batch_size == 0 or iter == len(dataloader) - 1:
-        loss /= batch_size
-        epoch_loss += loss.item()
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        loss = 0
-
-    epoch_loss_avg = epoch_loss / len(dataloader)
+    epoch_loss_avg = epoch_loss / len(train_loader)
     print(f'avg_loss = {epoch_loss_avg}')
     loss_hist.append(epoch_loss_avg)
 
-    if validator is not None and (epoch + 1) % validate_every == 0:
-      validator(estimator)
+    if (epoch + 1) % validate_every == 0:
+      print('Validating')
+      scores = validate(val_loader, model)
+      print('scores =', scores)
 
     if save_dir is not None:
-      model_file = f'model_{epoch + 1}.torch'
-      torch.save(estimator.state_dict(),
-                 os.path.join(save_dir, model_file))
+      save_dict = {
+        f'model_{epoch+1}.pth': model,
+        f'optim_{epoch+1}.pth': optimizer,
+      }
+
+      for filename, object in save_dict.items():
+        torch.save(object.state_dict(),
+                   os.path.join(save_dir, filename))
 
   return loss_hist

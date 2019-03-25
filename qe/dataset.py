@@ -5,107 +5,105 @@ import torch
 
 from torch.utils.data import Dataset
 
+from .embedding import UNK_TOKEN, PAD_TOKEN
 
-device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
-
-GAP_TOKEN = '_'
 OK_TOKEN = 'OK'
 BAD_TOKEN = 'BAD'
-UNK_TOKEN = '-'
 
 
 class QEDataset(Dataset):
 
-  def __init__(self, name, w2v_src, w2v_mt, spoil_p=0.1, data_dir=None):
+  def __init__(self, name, src2idx, mt2idx, data_dir=None):
     if data_dir is None:
       data_dir = name
 
-    self._src = self._read_corpus(
+    self._src = self._read_text(
       os.path.join(data_dir, f'{name}.src'),
-      w2v_src,
+      src2idx
     )
-    self._mt = self._read_corpus(
+    self._mt = self._read_text(
       os.path.join(data_dir, f'{name}.mt'),
-      w2v_mt,
-      add_gaps=True,
+      mt2idx
     )
-    self._tags = self._read_tags(os.path.join(data_dir, f'{name}.tags'))
 
-    self._vec_dim = self._src[0].shape[1]
-    self._spoil_p = spoil_p
+    self._word_tags, self._gap_tags = \
+        self._read_tags(os.path.join(data_dir, f'{name}.tags'), True)
 
-    assert (self._is_valid())
+    src_tag_exts = ['source_tags', 'src_tags']
+    for ext in src_tag_exts:
+      src_tag_file = os.path.join(data_dir, f'{name}.{ext}')
+      if os.path.isfile(src_tag_file):
+        break
+    self._src_tags = \
+        self._read_tags(src_tag_file, False)
+
+    self._validate()
 
   def __len__(self):
     return len(self._src)
 
   def __getitem__(self, idx):
-    #mt, tags = self._spoil_mt(self._mt[idx], self._tags[idx])
-    mt, tags = self._mt[idx], self._tags[idx]
     return {
       'src': self._src[idx],
-      'mt': mt,
-      'tags': tags,
+      'mt': self._mt[idx],
+      'src_tags': self._src_tags[idx],
+      'word_tags': self._word_tags[idx],
+      'gap_tags': self._gap_tags[idx],
     }
 
-  def _is_valid(self):
-    if len(self._src) != len(self._mt):
-      return False
-    if len(self._src) != len(self._tags):
-      return False
+  def _validate(self):
+    num_samples = len(self._src)
 
-    for mt, tags in zip(self._mt, self._tags):
-      if len(mt) != len(tags):
-        return False
+    assert len(self._mt) == num_samples
+    assert len(self._src_tags) == num_samples
+    assert len(self._word_tags) == num_samples
+    assert len(self._gap_tags) == num_samples
 
-    return True
+    for src, mt, src_tags, word_tags, gap_tags in zip(self._src,
+                                                      self._mt,
+                                                      self._src_tags,
+                                                      self._word_tags,
+                                                      self._gap_tags):
+      assert len(src) == len(src_tags)
 
-  def _get_random_mt_word_vecs(self, n_vecs):
-    return torch.randn(n_vecs, self._vec_dim, dtype=torch.float, device=device)
+      mt_len = len(mt)
+      assert len(word_tags) == mt_len
+      assert len(gap_tags) == mt_len + 1
 
-  def _spoil_mt(self, mt, tags):
-    mt_spoiled = mt.clone()
-    tags_spoiled = tags.clone()
-    spoil_mask = torch.rand(len(mt), device=device) < self._spoil_p
-    spoil_mask *= tags_spoiled.to(torch.uint8)  # spoil only ok tokens
+  def _read_text(self, path, word2idx):
+    print('Reading', path)
 
-    mt_spoiled[spoil_mask] = self._get_random_mt_word_vecs(spoil_mask.sum())
-    tags_spoiled[spoil_mask] = 0
-
-    return mt_spoiled, tags_spoiled
-
-  def _read_corpus(self, path, w2v, add_gaps=False):
-    gap_vec = w2v[GAP_TOKEN]
     num_unknown = 0
 
     samples = []
     with open(path, 'r') as file:
       for line in file:
-        sample = [gap_vec] if add_gaps else []
+        sample = []
 
         for word in line.split():
           try:
-            word_vec = w2v[word]
+            token = word2idx[word]
           except:
-            word_vec = w2v[UNK_TOKEN]
+            token = UNK_TOKEN
             num_unknown += 1
             print('Unknown word:', word)
 
-          sample.append(word_vec)
-          if add_gaps:
-            sample.append(gap_vec)
+          sample.append(token)
 
-        sample = torch.tensor(sample, dtype=torch.float32,
-                              device=device)
         samples.append(sample)
 
-    print('num_unknown:', num_unknown)
+    print(num_unknown, 'unknown words encountered')
 
     return samples
 
-  def _read_tags(self, path):
-    tags = []
+  def _read_tags(self, path, has_gaps):
+    print('Reading', path)
+
+    word_tags = []
+    if has_gaps:
+      gap_tags = []
+
     with open(path, 'r') as file:
       for line in file:
         line_tags = []
@@ -116,10 +114,40 @@ class QEDataset(Dataset):
             line_tags.append(0)
           else:
             raise Exception
-        line_tags = torch.tensor(line_tags, device=device)
-        tags.append(line_tags)
 
-    return tags
+        if has_gaps:
+          word_tags.append(line_tags[1::2])
+          gap_tags.append(line_tags[::2])
+        else:
+          word_tags.append(line_tags)
+
+    if has_gaps:
+      return word_tags, gap_tags
+
+    return word_tags
+
+
+def qe_collate(data, device=torch.device('cpu')):
+  def _pad_sequence(sequence):
+    sequence = [item.copy() for item in sequence]
+
+    max_len = max([len(item) for item in sequence])
+
+    for item in sequence:
+      while len(item) < max_len:
+        item.append(PAD_TOKEN)
+
+    return sequence
+
+  merged = {}
+  for key in data[0].keys():
+    sequence = [sample[key] for sample in data]
+    merged[key] = torch.tensor(_pad_sequence(sequence)).transpose(0, 1).to(device)
+
+  return merged
+
+
+# BERT section
 
 
 def tokenize_sentence(sent, tokenizer):
