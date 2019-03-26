@@ -179,7 +179,8 @@ class EncoderRNN(nn.Module):
 class EstimatorRNN(nn.Module):
 
   def __init__(self, hidden_size, src_embeddings, mt_embeddings,
-               output_size=2, dropout_p=0.2, self_attn=True):
+               output_size=2, bert_features_size=0, dropout_p=0.2,
+               self_attn=True):
     super(EstimatorRNN, self).__init__()
 
     self._hidden_size = hidden_size
@@ -201,14 +202,16 @@ class EstimatorRNN(nn.Module):
     if self_attn:
       features_size += 2 * hidden_size
 
-    self._out = nn.Linear(features_size, output_size)
-    self._softmax = nn.LogSoftmax(dim=2)
+    if bert_features_size != 0:
+        features_size +=  bert_features_size
+
+    self._crf = CRF(features_size, output_size)
 
     self._loss = nn.NLLLoss(reduction='none')
 
     self._zero_emb = torch.zeros(self._emb_dim)
 
-  def forward(self, src, mt, training=True):
+  def forward(self, src, mt, bert_features=None, training=True):
     max_src_len, batch_len = src.shape
     max_tgt_len = mt.shape[0]
 
@@ -226,7 +229,7 @@ class EstimatorRNN(nn.Module):
       tgt_emb[mt < 0] = self._zero_emb.to(device)
     tgt_features = self._tgt_enc(tgt_emb, training=training).transpose(0, 1)
 
-    estimator_inputs = [
+    features = [
       tgt_features,
     ]
 
@@ -238,7 +241,7 @@ class EstimatorRNN(nn.Module):
                                 src_features,
                                 src_features,
                                 attn_mask)
-    estimator_inputs.append(context)
+    features.append(context)
 
     self_align = None
     if self._use_self_attn:
@@ -250,33 +253,43 @@ class EstimatorRNN(nn.Module):
                                             tgt_features,
                                             tgt_features,
                                             self_attn_mask)
-      estimator_inputs.append(self_context)
+      features.append(self_context)
 
-    estimator_inputs = torch.cat(estimator_inputs, dim=2)
+    if bert_features is not None:
+      features.append(bert_features.transpose(0, 1))
 
-    scores = self._softmax(self._out(estimator_inputs)).transpose(0, 1)
+    features = torch.cat(features, dim=2)
 
-    return scores, align
+    return features.transpose(0, 1), align
 
   def loss(self, src, mt, src_tags=None, word_tags=None, gap_tags=None,
-           training=True):
-    scores, align = self.forward(src, mt, training=training)
+           bert_features=None, training=True):
+    features, align = self.forward(src, mt, bert_features=bert_features,
+                                   training=training)
 
-    losses = self._loss(scores.transpose(1, 2), word_tags)
-    loss_mask = (mt >= 0).to(torch.float)
-    loss = (losses * loss_mask).sum(dim=0).mean()
+    batch_len = src.shape[1]
+    loss = 0
+    for i in range(batch_len):
+      mt_len = (mt[:,i] >= 0).sum()
+      loss -= self._crf.log_likelihood(features[:mt_len,i,:],
+                                       word_tags[:mt_len,i])
 
-    return loss
+    return loss / batch_len
 
-  def predict(self, src, mt):
-    src_tags = torch.ones_like(src)
-    mt_tags = torch.ones((2 * len(mt) + 1,) + mt.shape[1:])
+  def predict(self, src, mt, bert_features=None):
+    with torch.no_grad():
+      src_tags = torch.ones_like(src)
+      mt_tags = torch.ones((2 * len(mt) + 1,) + mt.shape[1:])
 
-    scores, align = self.forward(src, mt, training=False)
+      features, align = self.forward(src, mt, bert_features=bert_features,
+                                     training=False)
 
-    mt_tags[1::2][scores[:,:,0] >= np.log(0.5)] = 0
+      batch_len = src.shape[1]
+      for i in range(batch_len):
+        mt_len = (mt[:,i] >= 0).sum()
+        mt_tags[:2*mt_len+1,i][1::2], _ = self._crf.label(features[:mt_len,i,:])
 
-    return src_tags, mt_tags
+      return src_tags, mt_tags
 
 
 class EstimatorCRF(nn.Module):

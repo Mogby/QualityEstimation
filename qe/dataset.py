@@ -1,4 +1,5 @@
 import os
+import pickle
 
 import numpy as np
 import torch
@@ -14,7 +15,7 @@ BAD_TOKEN = 'BAD'
 
 class QEDataset(Dataset):
 
-  def __init__(self, name, src2idx, mt2idx, data_dir=None):
+  def __init__(self, name, src2idx, mt2idx, use_bert_features=False, data_dir=None):
     if data_dir is None:
       data_dir = name
 
@@ -38,19 +39,33 @@ class QEDataset(Dataset):
     self._src_tags = \
         self._read_tags(src_tag_file, False)
 
+    self._use_bert = use_bert_features
+    if use_bert_features:
+      bert_file = os.path.join(data_dir, f'{name}.bert')
+      print(f'Reading {bert_file}')
+      with open(bert_file, 'rb') as bert:
+        self._bert_features = pickle.load(bert)
+
     self._validate()
 
   def __len__(self):
     return len(self._src)
 
   def __getitem__(self, idx):
-    return {
+    item = {
       'src': self._src[idx],
       'mt': self._mt[idx],
       'src_tags': self._src_tags[idx],
       'word_tags': self._word_tags[idx],
       'gap_tags': self._gap_tags[idx],
     }
+
+    if self._use_bert:
+      item.update({
+        'bert_features': self._bert_features[idx]
+      })
+
+    return item
 
   def _validate(self):
     num_samples = len(self._src)
@@ -59,17 +74,19 @@ class QEDataset(Dataset):
     assert len(self._src_tags) == num_samples
     assert len(self._word_tags) == num_samples
     assert len(self._gap_tags) == num_samples
+    if self._use_bert:
+      assert len(self._bert_features) == num_samples
 
-    for src, mt, src_tags, word_tags, gap_tags in zip(self._src,
-                                                      self._mt,
-                                                      self._src_tags,
-                                                      self._word_tags,
-                                                      self._gap_tags):
-      assert len(src) == len(src_tags)
+    for i in range(num_samples):
+      assert len(self._src[i]) == len(self._src_tags[i])
 
-      mt_len = len(mt)
-      assert len(word_tags) == mt_len
-      assert len(gap_tags) == mt_len + 1
+      mt_len = len(self._mt[i])
+      assert len(self._word_tags[i]) == mt_len
+      assert len(self._gap_tags[i]) == mt_len + 1
+
+      if self._use_bert:
+        assert len(self._bert_features[i]) == mt_len
+
 
   def _read_text(self, path, word2idx):
     print('Reading', path)
@@ -131,11 +148,20 @@ def qe_collate(data, device=torch.device('cpu')):
   def _pad_sequence(sequence):
     sequence = [item.copy() for item in sequence]
 
-    max_len = max([len(item) for item in sequence])
+    lens = [len(item) for item in sequence]
+    max_len = max(lens)
+    min_len = min(lens)
 
-    for item in sequence:
-      while len(item) < max_len:
-        item.append(PAD_TOKEN)
+    if max_len == min_len:
+        return sequence
+
+    pad_item = np.full_like(sequence[0][0], PAD_TOKEN)
+
+    for i, item in enumerate(sequence):
+      pad_amount = max_len - len(item)
+      if pad_amount > 0:
+          pad_array = np.asarray([pad_item] * pad_amount)
+          sequence[i] = np.concatenate((item, pad_array))
 
     return sequence
 
@@ -196,12 +222,6 @@ class BertQEDataset(Dataset):
       tags
     )
 
-    self._src = np.array(self._src, dtype=np.int64)
-    self._indices = np.array(self._indices, dtype=np.int64)
-    self._segs = np.array(self._segs, dtype=np.int64)
-    self._mt_mask = np.array(self._mt_mask, dtype=np.float64)
-    self._tags = np.array(self._tags, dtype=np.int64)
-
     print('Validating')
     assert (self._is_valid())
 
@@ -241,27 +261,18 @@ class BertQEDataset(Dataset):
       )
       new_tag = [0] * len(src) + [tag[2 * i + 1] for i in mt_idx[1:-1]] + [0]
 
-      src_merged.append(new_src)
-      idx_merged.append(new_idx)
-      tag_merged.append(new_tag)
+      src_merged.append(np.array(new_src, dtype=np.int64))
+      idx_merged.append(np.array(new_idx, dtype=np.int64))
+      tag_merged.append(np.array(new_tag, dtype=np.int64))
 
       mt_begin = new_idx.index(-2) + 1
-      seg_merged.append([0] * mt_begin
-                        + [1] * (len(new_src) - mt_begin))
+      seg_merged.append(np.array(
+        [0] * mt_begin + [1] * (len(new_src) - mt_begin),
+        dtype=np.int64
+      ))
 
-      mt_mask.append(seg_merged[-1][:])
+      mt_mask.append(np.array(seg_merged[-1][:], dtype=np.int64))
       mt_mask[-1][-1] = 0
-
-      max_src_len = max(max_src_len, len(new_src))
-
-    # padding samples
-    for src, idx, seg, mask, tag in zip(src_merged, idx_merged, seg_merged, mt_mask, tag_merged):
-      pad_len = max_src_len - len(src)
-      src.extend([0] * pad_len)
-      idx.extend([0] * pad_len)
-      seg.extend([0] * pad_len)
-      mask.extend([0] * pad_len)
-      tag.extend([0] * pad_len)
 
     return src_merged, idx_merged, seg_merged, mt_mask, tag_merged
 

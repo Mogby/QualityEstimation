@@ -2,8 +2,6 @@ import os
 
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.optim as optim
 
 from tqdm import tqdm
 from sklearn.metrics import f1_score
@@ -23,7 +21,14 @@ def validate(val_loader, model):
       src_mask = batch['src_tags'] >= 0
       word_mask = batch['word_tags'] >= 0
       gap_mask = batch['gap_tags'] >= 0
-      src_pred, mt_pred = model.predict(batch['src'], batch['mt'])
+
+      kwargs = {
+          'src': batch['src'],
+          'mt': batch['mt'],
+      }
+      if 'bert_features' in batch:
+          kwargs['bert_features'] = batch['bert_features']
+      src_pred, mt_pred = model.predict(**kwargs)
 
       src_preds.append(src_pred[src_mask].cpu().numpy())
       word_preds.append(mt_pred[1::2][word_mask].cpu().numpy())

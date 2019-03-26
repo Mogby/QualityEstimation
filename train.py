@@ -37,21 +37,23 @@ def main():
   collate = lambda data: qe_collate(data, device=device)
 
   train_ds = QEDataset('train', src_tokenizer._word2idx, mt_tokenizer._word2idx,
-                      data_dir=args.train_path)
+                       use_bert_features=True, data_dir=args.train_path)
+
   train_loader = DataLoader(train_ds, shuffle=True, batch_size=args.batch_size,
                             collate_fn=collate)
 
   dev_ds = QEDataset('dev', src_tokenizer._word2idx, mt_tokenizer._word2idx,
-                  data_dir=args.dev_path)
+                     use_bert_features=True, data_dir=args.dev_path)
   dev_loader = DataLoader(dev_ds, shuffle=True, batch_size=args.batch_size,
                           collate_fn=collate)
 
   model = EstimatorRNN(150,
                        torch.tensor(src_tokenizer._embeddings),
                        torch.tensor(mt_tokenizer._embeddings),
-                       dropout_p=0.2).to(device)
+                       bert_features_size=3840,
+                       dropout_p=0.).to(device)
 
-  optimizer = optim.Adadelta(model.parameters(), lr=1)
+  optimizer = optim.Adadelta(model.parameters(), lr=.1)
 
   train(train_loader, dev_loader, model, optimizer, n_epochs=args.num_epochs,
         validate_every=args.validate_every)
