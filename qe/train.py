@@ -27,7 +27,9 @@ def validate(val_loader, model):
           'mt': batch['mt'],
       }
       if 'bert_features' in batch:
-          kwargs['bert_features'] = batch['bert_features']
+        kwargs['bert_features'] = batch['bert_features']
+      if 'baseline_features' in batch:
+        kwargs['baseline_features'] = batch['baseline_features']
       src_pred, mt_pred = model.predict(**kwargs)
 
       src_preds.append(src_pred[src_mask].cpu().numpy())

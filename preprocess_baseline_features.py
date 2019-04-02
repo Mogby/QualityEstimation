@@ -14,8 +14,8 @@ def feature_to_float(features, feature_idx):
       word_features[feature_idx] = np.asarray([value], dtype=np.float32)
 
 
-def feature_to_one_hot(features, feature_idx, occurences_threshold):
-  print(f'Converting {feature_idx} to one-hot')
+def build_feature_vocab(features, feature_idx, occurences_threshold):
+  print(f'Building vocab for feature {feature_idx}')
   num_occurences = {}
 
   for sample_features in features:
@@ -26,31 +26,40 @@ def feature_to_one_hot(features, feature_idx, occurences_threshold):
       num_occurences[value] += 1
 
   vocab = [value for value, num in num_occurences.items()
-                 if num >= occurences_threshold]
-  vocab_size = len(vocab)
+           if num >= occurences_threshold]
 
   value2idx = {
     value: idx for idx, value in enumerate(vocab)
   }
 
+  return value2idx
+
+
+def feature_to_one_hot(features, feature_idx, value2idx):
+  print(f'Converting {feature_idx} to one-hot')
+
+  vocab_size = len(value2idx)
+
   for sample_features in tqdm(features):
     for word_features in sample_features:
       value = word_features[feature_idx]
-      if value in vocab:
+      if value in value2idx:
         word_features[feature_idx] = np.asarray([value2idx[value]],
                                                 dtype=np.float32)
       else:
         word_features[feature_idx] = np.asarray([vocab_size],
                                                 dtype=np.float32)
 
-  return vocab_size
-
 
 def main():
   parser = argparse.ArgumentParser()
   parser.add_argument('--features-file', required=True,
                       type=argparse.FileType('r'))
-  parser.add_argument('--out-file', required=True, type=argparse.FileType('wb'))
+  parser.add_argument('--features-out', required=True,
+                      type=argparse.FileType('wb'))
+  parser.add_argument('--occurences-threshold', default=4, type=int)
+  parser.add_argument('--vocabs-file', type=argparse.FileType('rb'))
+  parser.add_argument('--vocabs-out', type=argparse.FileType('wb'))
   args = parser.parse_args()
 
   print('Reading features')
@@ -84,25 +93,34 @@ def main():
 
   print('Processing features')
 
-  vocab_size = [-1] * num_features
+  vocabs = [None] * num_features
+  if args.vocabs_file is not None:
+    vocabs = pickle.load(args.vocabs_file)
+  else:
+    for i in range(num_features):
+      if not is_numerical[i]:
+        vocabs[i] = build_feature_vocab(features, i, args.occurences_threshold)
+
   for i in range(num_features):
     if is_numerical[i]:
       feature_to_float(features, i)
     else:
-      vocab_size[i] = feature_to_one_hot(features, i, occurences_threshold=4)
+      feature_to_one_hot(features, i, vocabs[i])
 
   for sample_features in features:
     for i in range(len(sample_features)):
       sample_features[i] = np.concatenate(sample_features[i])
 
   print('Dumping features')
-
   preprocessed = {
       'features': features,
-      'vocab_size': vocab_size,
+      'vocab_sizes': [len(v) if v is not None else -1 for v in vocabs],
   }
+  pickle.dump(preprocessed, args.features_out)
 
-  pickle.dump(preprocessed, args.out_file)
+  if args.vocabs_out is not None:
+    print('Dumping vocabs')
+    pickle.dump(vocabs, args.vocabs_out)
 
 
 if __name__ == '__main__':

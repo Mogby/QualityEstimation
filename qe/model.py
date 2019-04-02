@@ -4,6 +4,8 @@ import torch.nn as nn
 
 from pytorch_pretrained_bert import BertModel
 
+from .embedding import PAD_TOKEN
+
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
@@ -176,11 +178,60 @@ class EncoderRNN(nn.Module):
     return output
 
 
+class BaselineFeatureConverter(nn.Module):
+  '''
+  Converts categorial baseline features to one-hot vectors.
+
+  Receives a K baseline features and converts them to float vector of size L.
+  Operates on minibatches of size N.
+  '''
+
+  def __init__(self, vocab_sizes):
+    super(BaselineFeatureConverter, self).__init__()
+
+    self._num_features = len(vocab_sizes)
+    self._embeds = [None] * self._num_features
+    self._vocab_sizes = vocab_sizes[:]
+    self._features_size = 0
+    for i, size in enumerate(vocab_sizes):
+      if size == -1:
+        self._features_size += 1
+        continue
+
+      self._features_size += size
+      one_hot_embeds = torch.eye(size)
+      unk_embed = torch.zeros(size)
+      self._embeds[i] = nn.Embedding.from_pretrained(
+        torch.cat([one_hot_embeds, unk_embed.unsqueeze(0)])
+      ).to(device)
+
+  def forward(self, features):
+    '''
+    Converts baseline features to one-hot.
+
+    :param features: Batch of features of shape (N, K)
+    :return: Batch of converted features of shape (N, L)
+    '''
+    N, K = features.shape
+    features = features.view(-1, K)
+    converted = []
+    for i in range(self._num_features):
+      column = features[:, i]
+      if self._embeds[i] is not None:
+        column[column < 0] = self._vocab_sizes[i]
+        column = self._embeds[i](column.to(torch.long))
+      else:
+        column = column.unsqueeze(1)
+      converted.append(column)
+    converted = torch.cat(converted, dim=1)
+    return converted.reshape(N, -1)
+
+
 class EstimatorRNN(nn.Module):
 
   def __init__(self, hidden_size, src_embeddings, mt_embeddings,
-               output_size=2, bert_features_size=0, dropout_p=0.2,
-               self_attn=True):
+               output_size=2, bert_features_size=0, baseline_vocab_sizes=None,
+               dropout_p=0.2, self_attn=True):
     super(EstimatorRNN, self).__init__()
 
     self._hidden_size = hidden_size
@@ -202,8 +253,11 @@ class EstimatorRNN(nn.Module):
     if self_attn:
       features_size += 2 * hidden_size
 
-    if bert_features_size != 0:
-        features_size +=  bert_features_size
+    features_size +=  bert_features_size
+
+    if baseline_vocab_sizes is not None:
+      self._baseline_converter = BaselineFeatureConverter(baseline_vocab_sizes)
+      features_size += self._baseline_converter._features_size
 
     self._crf = CRF(features_size, output_size)
 
@@ -211,7 +265,14 @@ class EstimatorRNN(nn.Module):
 
     self._zero_emb = torch.zeros(self._emb_dim)
 
-  def forward(self, src, mt, bert_features=None, training=True):
+  def _convert_baseline_features(self, baseline_features):
+    N, M, K = baseline_features.shape
+    baseline_features = baseline_features.reshape(-1, K)
+    converted = self._baseline_converter(baseline_features).to(device)
+    return converted.reshape(N, M, -1)
+
+  def forward(self, src, mt, bert_features=None, baseline_features=None,
+              training=True):
     max_src_len, batch_len = src.shape
     max_tgt_len = mt.shape[0]
 
@@ -258,14 +319,16 @@ class EstimatorRNN(nn.Module):
     if bert_features is not None:
       features.append(bert_features.transpose(0, 1))
 
-    features = torch.cat(features, dim=2)
+    if baseline_features is not None:
+      baseline_features = self._convert_baseline_features(baseline_features)
+      features.append(baseline_features.transpose(0, 1))
 
+    features = torch.cat(features, dim=2)
     return features.transpose(0, 1), align
 
   def loss(self, src, mt, src_tags=None, word_tags=None, gap_tags=None,
-           bert_features=None, training=True):
-    features, align = self.forward(src, mt, bert_features=bert_features,
-                                   training=training)
+           **kwargs):
+    features, align = self.forward(src, mt, **kwargs)
 
     batch_len = src.shape[1]
     loss = 0
@@ -276,13 +339,14 @@ class EstimatorRNN(nn.Module):
 
     return loss / batch_len
 
-  def predict(self, src, mt, bert_features=None):
+  def predict(self, src, mt, **kwargs):
+    kwargs.setdefault('training', False)
+
     with torch.no_grad():
       src_tags = torch.ones_like(src)
       mt_tags = torch.ones((2 * len(mt) + 1,) + mt.shape[1:])
 
-      features, align = self.forward(src, mt, bert_features=bert_features,
-                                     training=False)
+      features, align = self.forward(src, mt, **kwargs)
 
       batch_len = src.shape[1]
       for i in range(batch_len):

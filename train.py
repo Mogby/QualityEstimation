@@ -24,6 +24,8 @@ def main():
   parser.add_argument('--batch-size', default=10, type=int)
   parser.add_argument('--num-epochs', default=20, type=int)
   parser.add_argument('--validate-every', default=1, type=int)
+  parser.add_argument('--learning-rate', default=.1, type=float)
+  parser.add_argument('--checkpoint-dir', type=str)
   args = parser.parse_args()
 
   print('Reading src embeddings')
@@ -37,26 +39,27 @@ def main():
   collate = lambda data: qe_collate(data, device=device)
 
   train_ds = QEDataset('train', src_tokenizer._word2idx, mt_tokenizer._word2idx,
-                       use_bert_features=True, data_dir=args.train_path)
+                       use_baseline=True, data_dir=args.train_path)
+
+  baseline_vocab_sizes = train_ds._baseline_vocab_sizes
 
   train_loader = DataLoader(train_ds, shuffle=True, batch_size=args.batch_size,
                             collate_fn=collate)
 
   dev_ds = QEDataset('dev', src_tokenizer._word2idx, mt_tokenizer._word2idx,
-                     use_bert_features=True, data_dir=args.dev_path)
+                     use_baseline=True, data_dir=args.dev_path)
   dev_loader = DataLoader(dev_ds, shuffle=True, batch_size=args.batch_size,
                           collate_fn=collate)
 
   model = EstimatorRNN(150,
                        torch.tensor(src_tokenizer._embeddings),
                        torch.tensor(mt_tokenizer._embeddings),
-                       bert_features_size=3840,
+                       baseline_vocab_sizes=baseline_vocab_sizes,
                        dropout_p=0.).to(device)
 
-  optimizer = optim.Adadelta(model.parameters(), lr=.1)
-
+  optimizer = optim.Adadelta(model.parameters(), lr=args.learning_rate)
   train(train_loader, dev_loader, model, optimizer, n_epochs=args.num_epochs,
-        validate_every=args.validate_every)
+        validate_every=args.validate_every, save_dir=args.checkpoint_dir)
 
 
 if __name__ == '__main__':

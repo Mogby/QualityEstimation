@@ -15,7 +15,8 @@ BAD_TOKEN = 'BAD'
 
 class QEDataset(Dataset):
 
-  def __init__(self, name, src2idx, mt2idx, use_bert_features=False, data_dir=None):
+  def __init__(self, name, src2idx, mt2idx, use_bert_features=False,
+               use_baseline=False, data_dir=None):
     if data_dir is None:
       data_dir = name
 
@@ -46,6 +47,15 @@ class QEDataset(Dataset):
       with open(bert_file, 'rb') as bert:
         self._bert_features = pickle.load(bert)
 
+    self._use_baseline = use_baseline
+    if use_baseline:
+      baseline_file = os.path.join(data_dir, f'{name}.baseline')
+      print(f'Reading {baseline_file}')
+      with open(baseline_file, 'rb') as baseline:
+        baseline_dict = pickle.load(baseline)
+        self._baseline_features = baseline_dict['features']
+        self._baseline_vocab_sizes = baseline_dict['vocab_sizes']
+
     self._validate()
 
   def __len__(self):
@@ -65,6 +75,11 @@ class QEDataset(Dataset):
         'bert_features': self._bert_features[idx]
       })
 
+    if self._use_baseline:
+      item.update({
+        'baseline_features': self._baseline_features[idx]
+      })
+
     return item
 
   def _validate(self):
@@ -76,6 +91,10 @@ class QEDataset(Dataset):
     assert len(self._gap_tags) == num_samples
     if self._use_bert:
       assert len(self._bert_features) == num_samples
+    if self._use_baseline:
+      assert len(self._baseline_features) == num_samples
+      assert len(self._baseline_vocab_sizes) == \
+             len(self._baseline_features[0][0])
 
     for i in range(num_samples):
       assert len(self._src[i]) == len(self._src_tags[i])
@@ -86,6 +105,9 @@ class QEDataset(Dataset):
 
       if self._use_bert:
         assert len(self._bert_features[i]) == mt_len
+
+      if self._use_baseline:
+        assert len(self._baseline_features[i]) == mt_len
 
 
   def _read_text(self, path, word2idx):
