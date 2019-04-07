@@ -22,15 +22,12 @@ def validate(val_loader, model):
       word_mask = batch['word_tags'] >= 0
       gap_mask = batch['gap_tags'] >= 0
 
-      kwargs = {
-          'src': batch['src'],
-          'mt': batch['mt'],
-      }
+      kwargs = {}
       if 'bert_features' in batch:
         kwargs['bert_features'] = batch['bert_features']
       if 'baseline_features' in batch:
         kwargs['baseline_features'] = batch['baseline_features']
-      src_pred, mt_pred = model.predict(**kwargs)
+      src_pred, mt_pred = model.predict(batch['src'], batch['mt'], **kwargs)
 
       src_preds.append(src_pred[src_mask].cpu().numpy())
       word_preds.append(mt_pred[1::2][word_mask].cpu().numpy())

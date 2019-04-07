@@ -43,12 +43,11 @@ def main():
   print(f'encountered {num_unknown} unknown words.')
 
   print('Saving embeddings...')
-  with open(args.output_file, 'wb') as f:
-    pickle.dump({
-      'word2idx': word2idx,
-      'idx2word': vocab,
-      'idx2vec': vecs,
-    }, f)
+  pickle.dump({
+    'word2idx': word2idx,
+    'idx2word': vocab,
+    'idx2vec': vecs,
+  }, args.output_file)
 
   print('Done.')
 

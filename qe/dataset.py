@@ -15,30 +15,31 @@ BAD_TOKEN = 'BAD'
 
 class QEDataset(Dataset):
 
-  def __init__(self, name, src2idx, mt2idx, use_bert_features=False,
-               use_baseline=False, data_dir=None):
+  def __init__(self, name, src_tokenizer, mt_tokenizer, use_tags=True,
+               use_bert_features=False, use_baseline=False, data_dir=None):
     if data_dir is None:
       data_dir = name
 
     self._src = self._read_text(
       os.path.join(data_dir, f'{name}.src'),
-      src2idx
+      src_tokenizer
     )
     self._mt = self._read_text(
       os.path.join(data_dir, f'{name}.mt'),
-      mt2idx
+      mt_tokenizer
     )
 
-    self._word_tags, self._gap_tags = \
-        self._read_tags(os.path.join(data_dir, f'{name}.tags'), True)
-
-    src_tag_exts = ['source_tags', 'src_tags']
-    for ext in src_tag_exts:
-      src_tag_file = os.path.join(data_dir, f'{name}.{ext}')
-      if os.path.isfile(src_tag_file):
-        break
-    self._src_tags = \
-        self._read_tags(src_tag_file, False)
+    self._use_tags = use_tags
+    if use_tags:
+      self._word_tags, self._gap_tags = \
+          self._read_tags(os.path.join(data_dir, f'{name}.tags'), True)
+      src_tag_exts = ['source_tags', 'src_tags']
+      for ext in src_tag_exts:
+        src_tag_file = os.path.join(data_dir, f'{name}.{ext}')
+        if os.path.isfile(src_tag_file):
+          break
+      self._src_tags = \
+          self._read_tags(src_tag_file, False)
 
     self._use_bert = use_bert_features
     if use_bert_features:
@@ -65,10 +66,14 @@ class QEDataset(Dataset):
     item = {
       'src': self._src[idx],
       'mt': self._mt[idx],
-      'src_tags': self._src_tags[idx],
-      'word_tags': self._word_tags[idx],
-      'gap_tags': self._gap_tags[idx],
     }
+
+    if self._use_tags:
+      item.update({
+        'src_tags': self._src_tags[idx],
+        'word_tags': self._word_tags[idx],
+        'gap_tags': self._gap_tags[idx],
+      })
 
     if self._use_bert:
       item.update({
@@ -86,9 +91,10 @@ class QEDataset(Dataset):
     num_samples = len(self._src)
 
     assert len(self._mt) == num_samples
-    assert len(self._src_tags) == num_samples
-    assert len(self._word_tags) == num_samples
-    assert len(self._gap_tags) == num_samples
+    if self._use_tags:
+      assert len(self._src_tags) == num_samples
+      assert len(self._word_tags) == num_samples
+      assert len(self._gap_tags) == num_samples
     if self._use_bert:
       assert len(self._bert_features) == num_samples
     if self._use_baseline:
@@ -97,11 +103,14 @@ class QEDataset(Dataset):
              len(self._baseline_features[0][0])
 
     for i in range(num_samples):
-      assert len(self._src[i]) == len(self._src_tags[i])
-
+      src_len = len(self._src[i])
       mt_len = len(self._mt[i])
-      assert len(self._word_tags[i]) == mt_len
-      assert len(self._gap_tags[i]) == mt_len + 1
+
+      if self._use_tags:
+        assert len(self._src_tags[i]) == src_len
+
+        assert len(self._word_tags[i]) == mt_len
+        assert len(self._gap_tags[i]) == mt_len + 1
 
       if self._use_bert:
         assert len(self._bert_features[i]) == mt_len
@@ -110,7 +119,7 @@ class QEDataset(Dataset):
         assert len(self._baseline_features[i]) == mt_len
 
 
-  def _read_text(self, path, word2idx):
+  def _read_text(self, path, tokenizer):
     print('Reading', path)
 
     num_unknown = 0

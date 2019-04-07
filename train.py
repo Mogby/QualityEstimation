@@ -38,7 +38,7 @@ def main():
 
   collate = lambda data: qe_collate(data, device=device)
 
-  train_ds = QEDataset('train', src_tokenizer._word2idx, mt_tokenizer._word2idx,
+  train_ds = QEDataset('train', src_tokenizer, mt_tokenizer,
                        use_baseline=True, data_dir=args.train_path)
 
   baseline_vocab_sizes = train_ds._baseline_vocab_sizes
@@ -46,7 +46,7 @@ def main():
   train_loader = DataLoader(train_ds, shuffle=True, batch_size=args.batch_size,
                             collate_fn=collate)
 
-  dev_ds = QEDataset('dev', src_tokenizer._word2idx, mt_tokenizer._word2idx,
+  dev_ds = QEDataset('dev', src_tokenizer, mt_tokenizer,
                      use_baseline=True, data_dir=args.dev_path)
   dev_loader = DataLoader(dev_ds, shuffle=True, batch_size=args.batch_size,
                           collate_fn=collate)
