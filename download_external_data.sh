@@ -30,6 +30,21 @@ else
     echo Skipping dataset...
 fi
 
+BASELINE_URL=https://www.quest.dcs.shef.ac.uk/wmt18_files_qe/features_en_de.tar.gz
+BASELINE_TEMP=$TEMP_DIR/baseline.tar.gz
+BASELINE_DEST=$DOWNLOAD_DIR/baseline
+
+if [ ! -d "$BASELINE_DEST" ]; then
+    mkdir -p $BASELINE_DEST
+    echo Downloading baseline features...
+    curl $BASELINE_URL -o $BASELINE_TEMP
+    mkdir -p $BASELINE_DEST
+    echo Extracting...
+    tar xf $BASELINE_TEMP -C $BASELINE_DEST
+else
+    echo Skipping baseline features...
+fi
+
 EMBEDDINGS_EN_URL=https://dl.fbaipublicfiles.com/fasttext/vectors-wiki/wiki.en.zip
 EMBEDDINGS_EN_TEMP=$TEMP_DIR/ft_en.zip
 EMBEDDINGS_EN_DEST=$DOWNLOAD_DIR/embeddings/en

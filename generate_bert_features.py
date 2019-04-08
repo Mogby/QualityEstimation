@@ -7,10 +7,11 @@ import numpy as np
 import torch
 
 from pytorch_pretrained_bert import BertModel, BertTokenizer
-from qe.dataset import BertQEDataset
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from qe.dataset import BertQEDataset
+from qe.model import device
 
 def main():
   parser = argparse.ArgumentParser()
@@ -21,7 +22,7 @@ def main():
 
   model_name = 'bert-base-multilingual-cased'
   tokenizer = BertTokenizer.from_pretrained(model_name)
-  bert = BertModel.from_pretrained(model_name)
+  bert = BertModel.from_pretrained(model_name).to(device)
 
   dataset = BertQEDataset(args.dataset_name, args.dataset_path, tokenizer)
   dataloader = DataLoader(dataset)
@@ -29,10 +30,10 @@ def main():
   with torch.no_grad():
     features = []
     for sample in tqdm(dataloader):
-      indices = torch.tensor(sample['indices'])
-      segs = torch.tensor(sample['segs']).to(torch.uint8)
+      indices = sample['indices'].to(device)
+      segs = sample['segs'].to(torch.uint8).to(device)
 
-      bert_out, _ = bert(sample['src'], sample['segs'],
+      bert_out, _ = bert(sample['src'].to(device), sample['segs'].to(device),
                          output_all_encoded_layers=False)
 
       mt_indices = indices[segs][:-1]
