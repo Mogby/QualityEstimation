@@ -20,11 +20,11 @@ class QEDataset(Dataset):
     if data_dir is None:
       data_dir = name
 
-    self._src = self._read_text(
+    self._src, self._src_inds = self._read_text(
       os.path.join(data_dir, f'{name}.src'),
       src_tokenizer
     )
-    self._mt = self._read_text(
+    self._mt, self._mt_inds = self._read_text(
       os.path.join(data_dir, f'{name}.mt'),
       mt_tokenizer
     )
@@ -56,6 +56,10 @@ class QEDataset(Dataset):
         baseline_dict = pickle.load(baseline)
         self._baseline_features = baseline_dict['features']
         self._baseline_vocab_sizes = baseline_dict['vocab_sizes']
+      for i, features in enumerate(self._baseline_features):
+        self._baseline_features[i] = self._expand_indices(
+            features, self._mt_inds[i]
+        )
 
     self._validate()
 
@@ -65,7 +69,9 @@ class QEDataset(Dataset):
   def __getitem__(self, idx):
     item = {
       'src': self._src[idx],
+      'src_inds': self._src_inds[idx],
       'mt': self._mt[idx],
+      'mt_inds': self._mt_inds[idx],
     }
 
     if self._use_tags:
@@ -110,7 +116,7 @@ class QEDataset(Dataset):
         assert len(self._src_tags[i]) == src_len
 
         assert len(self._word_tags[i]) == mt_len
-        assert len(self._gap_tags[i]) == mt_len + 1
+        assert len(self._gap_tags[i]) <= mt_len + 1
 
       if self._use_bert:
         assert len(self._bert_features[i]) == mt_len
@@ -118,32 +124,32 @@ class QEDataset(Dataset):
       if self._use_baseline:
         assert len(self._baseline_features[i]) == mt_len
 
-
   def _read_text(self, path, tokenizer):
     print('Reading', path)
 
     num_unknown = 0
 
     samples = []
+    indices = []
     with open(path, 'r') as file:
       for line in file:
         sample = []
+        sample_inds = []
 
-        for word in line.split():
-          try:
-            token = word2idx[word]
-          except:
-            token = UNK_TOKEN
-            num_unknown += 1
-            print('Unknown word:', word)
-
-          sample.append(token)
+        for i, word in enumerate(line.split()):
+          new_tokens = tokenizer.tokenize(word)
+          new_tokens = tokenizer.convert_tokens_to_ids(new_tokens)
+          sample.extend(new_tokens)
+          sample_inds.extend([i] * len(new_tokens))
 
         samples.append(sample)
+        indices.append(sample_inds)
 
-    print(num_unknown, 'unknown words encountered')
+    return samples, indices
 
-    return samples
+  def _expand_indices(self, arr, indices):
+    expanded = [arr[i] for i in indices]
+    return expanded
 
   def _read_tags(self, path, has_gaps):
     print('Reading', path)
@@ -153,7 +159,7 @@ class QEDataset(Dataset):
       gap_tags = []
 
     with open(path, 'r') as file:
-      for line in file:
+      for i, line in enumerate(file):
         line_tags = []
         for tag in line.split():
           if tag == OK_TOKEN:
@@ -164,10 +170,14 @@ class QEDataset(Dataset):
             raise Exception
 
         if has_gaps:
-          word_tags.append(line_tags[1::2])
+          word_tags.append(
+              self._expand_indices(line_tags[1::2], self._mt_inds[i])
+          )
           gap_tags.append(line_tags[::2])
         else:
-          word_tags.append(line_tags)
+          word_tags.append(
+              self._expand_indices(line_tags, self._src_inds[i])
+          )
 
     if has_gaps:
       return word_tags, gap_tags

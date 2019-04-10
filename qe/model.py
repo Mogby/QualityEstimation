@@ -326,8 +326,8 @@ class EstimatorRNN(nn.Module):
     features = torch.cat(features, dim=2)
     return features.transpose(0, 1), align
 
-  def loss(self, src, mt, src_tags=None, word_tags=None, gap_tags=None,
-           **kwargs):
+  def loss(self, src, src_inds, mt, mt_inds, src_tags=None, word_tags=None, 
+           gap_tags=None, **kwargs):
     features, align = self.forward(src, mt, **kwargs)
 
     batch_len = src.shape[1]
@@ -339,21 +339,25 @@ class EstimatorRNN(nn.Module):
 
     return loss / batch_len
 
-  def predict(self, src, mt, **kwargs):
+  def predict(self, src, src_inds, mt, mt_inds, **kwargs):
     kwargs.setdefault('training', False)
 
     with torch.no_grad():
       src_tags = torch.ones_like(src)
-      mt_tags = torch.ones((2 * len(mt) + 1,) + mt.shape[1:])
+      word_tags = torch.ones((len(mt),) + mt.shape[1:])
+      gap_tags = torch.ones((mt_inds.max() + 2,) + mt.shape[1:])
 
       features, align = self.forward(src, mt, **kwargs)
 
       batch_len = src.shape[1]
       for i in range(batch_len):
-        mt_len = (mt[:,i] >= 0).sum()
-        mt_tags[:2*mt_len+1,i][1::2], _ = self._crf.label(features[:mt_len,i,:])
+        mt_len = mt_inds[:,i].max() + 1
+        expanded_tags, _ = self._crf.label(features[:mt_len,i,:])
+        for j in range(mt_len):
+          word_tags[j, i] = \
+              1 - (expanded_tags[mt_inds[:mt_len, i] == j] == 1).any()
 
-      return src_tags, mt_tags
+      return src_tags, word_tags, gap_tags
 
 
 class EstimatorCRF(nn.Module):

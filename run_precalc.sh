@@ -1,10 +1,15 @@
 #!/bin/bash
 
 usage() {
-    echo "usage: $0 <data_dir>"
+    echo "usage: $0 <data_dir> [--bert-tokens]"
 }
 
-if [ "$#" -ne 1 ]; then
+if [ "$#" -lt 1 ]; then
+    usage
+    exit
+fi
+
+if [[ "$2" != "" && "$2" != "--bert-tokens" ]]; then
     usage
     exit
 fi
@@ -12,10 +17,31 @@ fi
 SCRIPT_DIR="$( cd "$( dirname "$0" )" && pwd )"
 DOWNLOAD_SCRIPT=$SCRIPT_DIR/download_external_data.sh
 EMBEDDING_SCRIPT=$SCRIPT_DIR/precalc_embeddings.py
-BERT_SCRIPT=$SCRIPT_DIR/generate_bert_features.py
 BASELINE_SCRIPT=$SCRIPT_DIR/preprocess_baseline_features.py
+BERT_SCRIPT=$SCRIPT_DIR/generate_bert_features.py
 
-DATA_DIR=$1
+# args: data-dir
+download_external_data() {
+    $DOWNLOAD_SCRIPT $1
+}
+
+# args: fasttext-model, output-file, bert-tokens, text-files
+precalc_embeddings() {
+    $EMBEDDING_SCRIPT --fasttext-model=$1 --output-file=$2 $3 $4
+}
+
+# args: features-file, features-out, vocabs-option
+preprocess_baseline_features() {
+    $BASELINE_SCRIPT --features-file=$1 --features-out=$2 $3
+}
+
+# args: dataset-path, dataset-name, out-file, bert-tokens
+generate_bert_features() {
+    $BERT_SCRIPT --dataset-path=$1 --dataset-name=$2 --out-file=$3 $4
+}
+
+DATA_DIR="$(readlink -f "$1")"
+BERT_TOKENS=$2
 
 EXTERNAL_DATA_DIR=$DATA_DIR/external
 
@@ -36,21 +62,21 @@ PRECALC_DIR=$DATA_DIR/precalc
 EMBEDDINGS_DIR=$PRECALC_DIR/embeddings
 EMBEDDINGS_EN_DEST=$EMBEDDINGS_DIR/en.pkl
 EMBEDDINGS_DE_DEST=$EMBEDDINGS_DIR/de.pkl
-ENGLISH_TEXTS="$TRAIN_DIR/dev.src $DEV_DIR/train.src"
-GERMAN_TEXTS="$TRAIN_DIR/dev.mt $DEV_DIR/train.mt"
+ENGLISH_TEXTS="$TRAIN_DIR/train.src $DEV_DIR/dev.src"
+GERMAN_TEXTS="$TRAIN_DIR/train.mt $DEV_DIR/dev.mt"
 
 mkdir -p $EMBEDDINGS_DIR
 
 if [ ! -f "$EMBEDDINGS_EN_DEST" ]; then
     echo Precalcing English embeddings...
-    $EMBEDDING_SCRIPT --fasttext-model=$FASTTEXT_EN_MODEL --output-file=$EMBEDDINGS_EN_DEST $ENGLISH_TEXTS
+    precalc_embeddings $FASTTEXT_EN_MODEL $EMBEDDINGS_EN_DEST "$BERT_TOKENS" "$ENGLISH_TEXTS"
 else
     echo Skipping English embeddings precalc...
 fi
 
 if [ ! -f "$EMBEDDINGS_DE_DEST" ]; then
     echo Precalcing German embeddings...
-    $EMBEDDING_SCRIPT --fasttext-model=$FASTTEXT_DE_MODEL --output-file=$EMBEDDINGS_DE_DEST $GERMAN_TEXTS
+    precalc_embeddings $FASTTEXT_DE_MODEL $EMBEDDINGS_DE_DEST "$BERT_TOKENS" "$GERMAN_TEXTS"
 else
     echo Skipping German embeddings precalc...
 fi
@@ -69,14 +95,14 @@ if [[ ! -f "$TRAIN_BASELINE_DEST" || ! -f "$BASELINE_VOCABS_DEST" ]]; then
         rm -rf $DEV_BASELINE_DEST
     fi
     echo Preprocessing baseline features for train...
-    $BASELINE_SCRIPT --features-file=$TRAIN_BASELINE_SRC --features-out=$TRAIN_BASELINE_DEST --vocabs-out=$BASELINE_VOCABS_DEST
+    preprocess_baseline_features $TRAIN_BASELINE_SRC $TRAIN_BASELINE_DEST --vocabs-out=$BASELINE_VOCABS_DEST
 else
     echo Skipping baseline preprocessing for train...
 fi
 
 if [ ! -f "$DEV_BASELINE_DEST" ]; then
     echo Preprocessing baseline features for dev...
-    $BASELINE_SCRIPT --features-file=$DEV_BASELINE_SRC --features-out=$DEV_BASELINE_DEST --vocabs-file=$BASELINE_VOCABS_DEST
+    preprocess_baseline_features $DEV_BASELINE_SRC $DEV_BASELINE_DEST --vocabs-file=$BASELINE_VOCABS_DEST
 else
     echo Skipping baseline preprocessing for dev...
 fi
@@ -89,14 +115,14 @@ mkdir -p $BERT_DEST
 
 if [ ! -f "$TRAIN_BERT_DEST" ]; then
     echo Generating bert features for train...
-    $BERT_SCRIPT --dataset-path=$TRAIN_DIR --dataset-name=train --out-file=$TRAIN_BERT_DEST
+    generate_bert_features $TRAIN_DIR train $TRAIN_BERT_DEST "$BERT_TOKENS"
 else
     echo Skipping bert generation for train...
 fi
 
 if [ ! -f "$DEV_BERT_DEST" ]; then
     echo Generating bert features for dev...
-    $BERT_SCRIPT --dataset-path=$DEV_DIR --dataset-name=dev --out-file=$DEV_BERT_DEST
+    generate_bert_features $DEV_DIR dev $DEV_BERT_DEST "$BERT_TOKENS"
 else
     echo Skipping bert generation for dev...
 fi

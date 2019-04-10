@@ -18,7 +18,11 @@ def main():
   parser.add_argument('--dataset-path', required=True, type=str)
   parser.add_argument('--dataset-name', required=True, type=str)
   parser.add_argument('--out-file', required=True, type=argparse.FileType('wb'))
+  parser.add_argument('--bert-tokens', action='store_true')
   args = parser.parse_args()
+
+  if args.bert_tokens:
+    print('Using bert tokens...')
 
   model_name = 'bert-base-multilingual-cased'
   tokenizer = BertTokenizer.from_pretrained(model_name)
@@ -27,6 +31,7 @@ def main():
   dataset = BertQEDataset(args.dataset_name, args.dataset_path, tokenizer)
   dataloader = DataLoader(dataset)
 
+  print('Generating features...')
   with torch.no_grad():
     features = []
     for sample in tqdm(dataloader):
@@ -41,15 +46,18 @@ def main():
 
       sample_features = []
       max_idx = mt_indices.max()
-      for i in range(max_idx + 1):
-        idx_mask = mt_indices == i
-        sample_features.append(torch.cat((
-          bert_mt_features[idx_mask].mean(dim=0),
-          bert_mt_features[idx_mask].max(dim=0)[0],
-          bert_mt_features[idx_mask].min(dim=0)[0],
-          bert_mt_features[idx_mask][0],
-          bert_mt_features[idx_mask][-1],
-        )).cpu().numpy())
+      if args.bert_tokens:
+        sample_features = bert_mt_features.cpu().numpy()
+      else:
+        for i in range(max_idx + 1):
+          idx_mask = mt_indices == i
+          sample_features.append(torch.cat((
+            bert_mt_features[idx_mask].mean(dim=0),
+            bert_mt_features[idx_mask].max(dim=0)[0],
+            bert_mt_features[idx_mask].min(dim=0)[0],
+            bert_mt_features[idx_mask][0],
+            bert_mt_features[idx_mask][-1],
+          )).cpu().numpy())
 
       features.append(np.asarray(sample_features, dtype=np.float32))
 

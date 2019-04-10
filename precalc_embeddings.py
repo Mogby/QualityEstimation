@@ -5,6 +5,7 @@ import pickle
 
 from gensim.models import FastText
 
+from qe.embedding import Tokenizer
 
 def main():
   parser = argparse.ArgumentParser()
@@ -12,25 +13,32 @@ def main():
                       type=str)
   parser.add_argument('--output-file', metavar='<output>', required=True,
                       type=argparse.FileType('wb'))
+  parser.add_argument('--bert-tokens', action='store_true')
   parser.add_argument('files', metavar='<textfile>', nargs='+')
 
   args = parser.parse_args()
+
+  if args.bert_tokens:
+    print('Using bert tokens...')
 
   print('Loading model...')
   ft = FastText.load_fasttext_format(args.fasttext_model)
 
   print('Building vocab...', end=' ')
+  tokenizer = Tokenizer(bert_tokenization=args.bert_tokens)
   vocab = []
   for fname in args.files:
+    print(f'Reading {fname}...')
     with open(fname, 'r') as f:
       for line in f:
-        vocab.extend(line.split())
+        for word in line.split():
+          vocab.extend(tokenizer.tokenize(word))
   vocab = list(set(vocab))  # remove duplicates
   vocab = sorted(vocab)
   word2idx = {word: i for i, word in enumerate(vocab)}
-  print(f'vocab size is {len(vocab)}.')
+  print(f'Vocab size is {len(vocab)}...')
 
-  print('Precalculating embeddings...', end=' ')
+  print('Precalculating embeddings...')
   vecs = []
   num_unknown = 0
   for word in vocab:
@@ -40,7 +48,7 @@ def main():
       vecs.append(ft.wv['_'])
       num_unknown += 1
 
-  print(f'encountered {num_unknown} unknown words.')
+  print(f'Encountered {num_unknown} unknown words.')
 
   print('Saving embeddings...')
   pickle.dump({
