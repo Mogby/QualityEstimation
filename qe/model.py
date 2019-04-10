@@ -260,16 +260,34 @@ class EstimatorRNN(nn.Module):
       features_size += self._baseline_converter._features_size
 
     self._crf = CRF(features_size, output_size)
+    self._gap_crf = CRF(2 * features_size, output_size)
 
     self._loss = nn.NLLLoss(reduction='none')
 
     self._zero_emb = torch.zeros(self._emb_dim)
+    self._zero_features = torch.zeros(features_size)
 
   def _convert_baseline_features(self, baseline_features):
     N, M, K = baseline_features.shape
     baseline_features = baseline_features.reshape(-1, K)
     converted = self._baseline_converter(baseline_features).to(device)
     return converted.reshape(N, M, -1)
+
+  def _make_gap_features(self, mt_features, mt_inds):
+    nxt_features = [mt_features[0].unsqueeze(0)]
+    prv_features = [self._zero_features.unsqueeze(0).to(device)]
+    for i, (prv, nxt) in enumerate(zip(mt_inds[:-1], mt_inds[1:])):
+      if prv != nxt:
+       nxt_features.append(mt_features[i+1].unsqueeze(0))
+       prv_features.append(mt_features[i].unsqueeze(0))
+    nxt_features.append(self._zero_features.unsqueeze(0).to(device))
+    prv_features.append(mt_features[-1].unsqueeze(0))
+
+    nxt_features = torch.cat(nxt_features)
+    prv_features = torch.cat(prv_features)
+
+    return torch.cat([nxt_features, prv_features], dim=1)
+
 
   def forward(self, src, mt, bert_features=None, baseline_features=None,
               training=True):
@@ -333,9 +351,17 @@ class EstimatorRNN(nn.Module):
     batch_len = src.shape[1]
     loss = 0
     for i in range(batch_len):
-      mt_len = (mt[:,i] >= 0).sum()
-      loss -= self._crf.log_likelihood(features[:mt_len,i,:],
-                                       word_tags[:mt_len,i])
+      tokens_len = (mt[:,i] >= 0).sum()
+      mt_len = mt_inds[:,i].max() + 1
+
+      loss -= self._crf.log_likelihood(features[:tokens_len,i,:],
+                                       word_tags[:tokens_len,i])
+
+      gap_features = self._make_gap_features(
+          features[:tokens_len,i,:], mt_inds[:tokens_len, i]
+      )
+      loss -= self._gap_crf.log_likelihood(gap_features,
+                                           gap_tags[:mt_len+1,i])
 
     return loss / batch_len
 
@@ -351,11 +377,19 @@ class EstimatorRNN(nn.Module):
 
       batch_len = src.shape[1]
       for i in range(batch_len):
+        tokens_len = (mt[:,i] >= 0).sum()
         mt_len = mt_inds[:,i].max() + 1
+
         expanded_tags, _ = self._crf.label(features[:mt_len,i,:])
         for j in range(mt_len):
           word_tags[j, i] = \
               1 - (expanded_tags[mt_inds[:mt_len, i] == j] == 1).any()
+
+        gap_features = self._make_gap_features(
+            features[:tokens_len,i,:], mt_inds[:tokens_len, i]
+        )
+        gap_tags[:mt_len+1, i], _ = self._gap_crf.label(gap_features)
+
 
       return src_tags, word_tags, gap_tags
 

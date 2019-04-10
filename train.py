@@ -42,15 +42,16 @@ def main():
   collate = lambda data: qe_collate(data, device=device)
 
   train_ds = QEDataset('train', src_tokenizer, mt_tokenizer,
-                       use_baseline=True, use_bert_features=True, 
+                       #use_baseline=True, use_bert_features=True, 
                        data_dir=args.train_path)
+  train_ds, _ = random_split(train_ds, (100, len(train_ds) - 100))
 
-  baseline_vocab_sizes = train_ds._baseline_vocab_sizes
+  # baseline_vocab_sizes = train_ds._baseline_vocab_sizes
 
   train_loader = DataLoader(train_ds, shuffle=True, batch_size=args.batch_size,
                             collate_fn=collate)
   dev_ds = QEDataset('dev', src_tokenizer, mt_tokenizer,
-                     use_baseline=True, use_bert_features=True, 
+                     #use_baseline=True, use_bert_features=True, 
                      data_dir=args.dev_path)
   dev_loader = DataLoader(dev_ds, shuffle=True, batch_size=args.batch_size,
                           collate_fn=collate)
@@ -58,8 +59,8 @@ def main():
   model = EstimatorRNN(150,
                        torch.tensor(src_tokenizer._embeddings),
                        torch.tensor(mt_tokenizer._embeddings),
-                       bert_features_size=768,
-                       baseline_vocab_sizes=baseline_vocab_sizes,
+                       # bert_features_size=768,
+                       # baseline_vocab_sizes=baseline_vocab_sizes,
                        dropout_p=0.).to(device)
 
   optimizer = optim.Adadelta(model.parameters(), lr=args.learning_rate)
