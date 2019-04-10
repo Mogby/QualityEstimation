@@ -383,7 +383,7 @@ class EstimatorRNN(nn.Module):
         expanded_tags, _ = self._crf.label(features[:mt_len,i,:])
         for j in range(mt_len):
           word_tags[j, i] = \
-              1 - (expanded_tags[mt_inds[:mt_len, i] == j] == 1).any()
+              1 - (expanded_tags[mt_inds[:mt_len, i] == j] == 0).any()
 
         gap_features = self._make_gap_features(
             features[:tokens_len,i,:], mt_inds[:tokens_len, i]
