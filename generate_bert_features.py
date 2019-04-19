@@ -52,9 +52,6 @@ def main():
         for i in range(max_idx + 1):
           idx_mask = mt_indices == i
           sample_features.append(torch.cat((
-            bert_mt_features[idx_mask].mean(dim=0),
-            bert_mt_features[idx_mask].max(dim=0)[0],
-            bert_mt_features[idx_mask].min(dim=0)[0],
             bert_mt_features[idx_mask][0],
             bert_mt_features[idx_mask][-1],
           )).cpu().numpy())

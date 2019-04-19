@@ -61,6 +61,9 @@ class QEDataset(Dataset):
             features, self._mt_inds[i]
         )
 
+    aligns_file = os.path.join(data_dir, f'{name}.src-mt.alignments')
+    self._aligns = self._read_alignments(aligns_file)
+
     self._validate()
 
   def __len__(self):
@@ -72,6 +75,7 @@ class QEDataset(Dataset):
       'src_inds': self._src_inds[idx],
       'mt': self._mt[idx],
       'mt_inds': self._mt_inds[idx],
+      'aligns': self._aligns[idx],
     }
 
     if self._use_tags:
@@ -148,6 +152,7 @@ class QEDataset(Dataset):
     return samples, indices
 
   def _expand_indices(self, arr, indices):
+    assert max(indices) + 1 == len(arr)
     expanded = [arr[i] for i in indices]
     return expanded
 
@@ -167,7 +172,7 @@ class QEDataset(Dataset):
           elif tag == BAD_TOKEN:
             line_tags.append(0)
           else:
-            raise Exception
+            raise ValueError('Unknown tag')
 
         if has_gaps:
           word_tags.append(
@@ -183,6 +188,20 @@ class QEDataset(Dataset):
       return word_tags, gap_tags
 
     return word_tags
+
+  def _read_alignments(self, path):
+    print('Reading', path)
+
+    aligns = []
+    with open(path, 'r') as file:
+      for line in file:
+        line_aligns = []
+        for pair in line.split():
+          src, mt = pair.split('-')
+          line_aligns.append([int(src), int(mt)])
+        aligns.append(line_aligns)
+
+    return aligns
 
 
 def qe_collate(data, device=torch.device('cpu')):
@@ -257,11 +276,12 @@ class BertQEDataset(Dataset):
     tags = self._read_tags(os.path.join(data_dir, f'{name}.tags'))
 
     print('Merging data')
-    self._src, self._indices, self._segs, self._mt_mask, self._tags = self._merge_data(
-      src, src_indices,
-      mt, mt_indices,
-      tags
-    )
+    self._src, self._indices, self._segs, self._mt_mask, self._tags \
+        = self._merge_data(
+            src, src_indices,
+            mt, mt_indices,
+            tags
+        )
 
     print('Validating')
     assert (self._is_valid())

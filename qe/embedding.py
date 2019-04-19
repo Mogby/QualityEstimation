@@ -35,7 +35,7 @@ class Tokenizer:
     assert self._has_embeds
 
     return list(map(
-      lambda word: self._tokens_to_ids.get(word.lower(), UNK_TOKEN),
+      lambda word: self._tokens_to_ids.get(word, UNK_TOKEN),
       tokens
     ))
 

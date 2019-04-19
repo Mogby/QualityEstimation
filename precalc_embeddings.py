@@ -40,15 +40,12 @@ def main():
 
   print('Precalculating embeddings...')
   vecs = []
-  num_unknown = 0
   for word in vocab:
     try:
       vecs.append(ft.wv[word])
     except:
+      print('Unknown word:', word)
       vecs.append(ft.wv['_'])
-      num_unknown += 1
-
-  print(f'Encountered {num_unknown} unknown words.')
 
   print('Saving embeddings...')
   pickle.dump({

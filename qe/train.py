@@ -5,6 +5,7 @@ import torch
 
 from tqdm import tqdm
 from sklearn.metrics import f1_score
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 
 def validate(val_loader, model):
@@ -29,7 +30,8 @@ def validate(val_loader, model):
         kwargs['baseline_features'] = batch['baseline_features']
       src_pred, word_pred, gap_pred = \
           model.predict(batch['src'], batch['src_inds'],
-                        batch['mt'], batch['mt_inds'], **kwargs)
+                        batch['mt'], batch['mt_inds'], batch['aligns'], 
+                        **kwargs)
 
       src_preds.append(src_pred[src_mask].cpu().numpy())
       word_preds.append(word_pred[word_mask].cpu().numpy())
@@ -60,6 +62,7 @@ def validate(val_loader, model):
 
 def train(train_loader, val_loader, model, optimizer, n_epochs,
           validate_every=5, save_dir=None):
+  scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=5)
   loss_hist = []
   for epoch in range(n_epochs):
     print(f'Epoch {epoch+1}')
@@ -80,6 +83,8 @@ def train(train_loader, val_loader, model, optimizer, n_epochs,
       print('Validating')
       scores = validate(val_loader, model)
       print('scores =', scores)
+
+    scheduler.step(scores['word']['mul'])
 
     if save_dir is not None:
       save_dict = {

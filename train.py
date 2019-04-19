@@ -27,6 +27,7 @@ def main():
   parser.add_argument('--learning-rate', default=.1, type=float)
   parser.add_argument('--checkpoint-dir', type=str)
   parser.add_argument('--bert-tokens', action='store_true')
+  parser.add_argument('--hidden-size',default=150, type=int)
   args = parser.parse_args()
 
   print('Reading src embeddings')
@@ -42,7 +43,8 @@ def main():
   collate = lambda data: qe_collate(data, device=device)
 
   train_ds = QEDataset('train', src_tokenizer, mt_tokenizer,
-                       use_baseline=True, use_bert_features=True, 
+                       use_baseline=True,
+                       use_bert_features=True,
                        data_dir=args.train_path)
 
   baseline_vocab_sizes = train_ds._baseline_vocab_sizes
@@ -50,15 +52,18 @@ def main():
   train_loader = DataLoader(train_ds, shuffle=True, batch_size=args.batch_size,
                             collate_fn=collate)
   dev_ds = QEDataset('dev', src_tokenizer, mt_tokenizer,
-                     use_baseline=True, use_bert_features=True, 
+                     use_baseline=True,
+                     use_bert_features=True,
                      data_dir=args.dev_path)
   dev_loader = DataLoader(dev_ds, shuffle=True, batch_size=args.batch_size,
                           collate_fn=collate)
 
-  model = EstimatorRNN(150,
+  model = EstimatorRNN(args.hidden_size,
                        torch.tensor(src_tokenizer._embeddings),
                        torch.tensor(mt_tokenizer._embeddings),
-                       bert_features_size=768,
+                       predict_gaps=False,
+                       self_attn=False,
+                       bert_features_size=2*768,
                        baseline_vocab_sizes=baseline_vocab_sizes,
                        dropout_p=0.).to(device)
 
