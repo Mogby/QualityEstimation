@@ -16,7 +16,7 @@ class Tokenizer:
       self._has_embeds = True
       embeddings = pickle.load(embeddings_file)
       self._tokens_to_ids = embeddings['word2idx']
-      self._ids_to_tokens = embeddings['idx2word'] + ['[UNK]'] + ['[PAD]']
+      self._ids_to_tokens =  embeddings['idx2word'] + ['[UNK]'] + ['[PAD]']
       self._embeddings = np.asarray(embeddings['idx2vec'], dtype=np.float32)
     else:
       self._has_embeds = False

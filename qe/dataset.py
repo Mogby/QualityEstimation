@@ -4,6 +4,7 @@ import pickle
 import numpy as np
 import torch
 
+from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
 
 from .embedding import UNK_TOKEN, PAD_TOKEN
@@ -205,30 +206,10 @@ class QEDataset(Dataset):
 
 
 def qe_collate(data, device=torch.device('cpu')):
-  def _pad_sequence(sequence):
-    sequence = [item.copy() for item in sequence]
-
-    lens = [len(item) for item in sequence]
-    max_len = max(lens)
-    min_len = min(lens)
-
-    if max_len == min_len:
-        return sequence
-
-    pad_item = np.full_like(sequence[0][0], PAD_TOKEN)
-
-    for i, item in enumerate(sequence):
-      pad_amount = max_len - len(item)
-      if pad_amount > 0:
-          pad_array = np.asarray([pad_item] * pad_amount)
-          sequence[i] = np.concatenate((item, pad_array))
-
-    return sequence
-
   merged = {}
   for key in data[0].keys():
-    sequence = [sample[key] for sample in data]
-    merged[key] = torch.tensor(_pad_sequence(sequence)).transpose(0, 1).to(device)
+    sequence = [torch.tensor(sample[key]) for sample in data]
+    merged[key] = pad_sequence(sequence, padding_value=PAD_TOKEN).to(device)
 
   return merged
 

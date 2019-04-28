@@ -1,4 +1,5 @@
 import numpy as np
+import onmt
 import torch
 import torch.nn as nn
 
@@ -227,6 +228,116 @@ class BaselineFeatureConverter(nn.Module):
     return converted.reshape(N, -1)
 
 
+class ONMTEstimator(nn.Module):
+
+  def __init__(self, hidden_size, src_embeddings, mt_embeddings):
+    super(ONMTEstimator, self).__init__()
+
+    self._hidden_size = hidden_size
+    self._emb_dim = src_embeddings.shape[1]
+    assert mt_embeddings.shape[1] == self._emb_dim
+
+    src_emb = onmt.modules.Embeddings(
+        self._emb_dim,
+        len(src_embeddings),
+        PAD_TOKEN,
+    )
+    src_emb.word_lut.weight.data = src_embeddings.to(device)
+    src_emb.word_lut.weight.requires_grad = False
+
+    self._src_enc = onmt.encoders.RNNEncoder(
+        hidden_size=hidden_size, 
+        num_layers=1,
+        rnn_type='LSTM',
+        bidirectional=True,
+        embeddings=src_emb,
+        dropout=0.
+    )
+
+    mt_emb = onmt.modules.Embeddings(
+        self._emb_dim,
+        len(mt_embeddings),
+        PAD_TOKEN,
+    )
+    mt_emb.word_lut.weight.data = mt_embeddings.to(device)
+    mt_emb.word_lut.weight.requires_grad = False
+
+    self._mt_enc = onmt.encoders.RNNEncoder(
+        hidden_size=hidden_size,
+        num_layers=1,
+        rnn_type='LSTM',
+        bidirectional=True,
+        embeddings=mt_emb,
+        dropout=0.
+    )
+
+    self._attn = onmt.modules.MultiHeadedAttention(
+        head_count=1,
+        model_dim=hidden_size,
+        dropout=0.,
+    )
+
+    self._out = nn.Linear(2*hidden_size, 2)
+    self._loss = nn.CrossEntropyLoss(ignore_index=PAD_TOKEN)
+
+  def forward(self, src, mt, **kwargs):
+    max_src_len, batch_len = src.shape
+    max_mt_len = mt.shape[0]
+
+    features = []
+
+    nsrc = src.unsqueeze(2)
+    nsrc[nsrc < 0] = 0
+    src_feats = self._src_enc(nsrc)[1].transpose(0, 1)
+    nmt = mt.unsqueeze(2)
+    nmt[nmt < 0] = 0
+    mt_feats = self._mt_enc(nmt)[1].transpose(0, 1)
+    features.append(mt_feats)
+
+    attn_mask = torch.empty(batch_len, max_mt_len, max_src_len, 
+                            dtype=torch.uint8, device=device)
+    for i in range(batch_len):
+      attn_mask[i,:,:] = (src[:,i] != PAD_TOKEN)
+    context, _ = self._attn(src_feats, src_feats, mt_feats, attn_mask)
+    features.append(context)
+
+    scores = self._out(
+        torch.cat(features, dim=2)
+    )
+
+    return scores.transpose(0, 1)
+
+  def loss(self, src, src_inds, mt, mt_inds, aligns, src_tags=None, 
+           word_tags=None, gap_tags=None, **kwargs):
+    scores = self(src, mt, **kwargs)
+    return self._loss(scores.transpose(1, 2), word_tags)
+
+  def predict(self, src, src_inds, mt, mt_inds, aligns, **kwargs):
+    with torch.no_grad():
+      src_tags = torch.ones_like(src)
+      word_tags = torch.ones_like(mt)
+      gap_tags = torch.ones((mt_inds.max() + 2,) + mt.shape[1:])
+
+      scores = self(src, mt)
+
+      batch_len = src.shape[1]
+      for i in range(batch_len):
+        tokens_len = (mt_inds[:,i] >= 0).sum()
+        mt_len = mt_inds[:,i].max() + 1
+
+        expanded_tags = (scores[:,i,1] > scores[:,i,0])
+        for j in range(mt_len):
+          word_tags[j, i] = \
+              (expanded_tags[mt_inds[:, i] == j] == 1).all()
+        for j_src, j_mt in aligns[:, i]:
+          if j_mt == -1:
+            break
+          if word_tags[j_mt, i] == 0:
+            src_tags[j_src, i] = 0
+
+      return src_tags, word_tags, gap_tags
+
+
 class EstimatorRNN(nn.Module):
 
   def __init__(self, hidden_size, src_embeddings, mt_embeddings,
@@ -244,15 +355,22 @@ class EstimatorRNN(nn.Module):
     self._src_emb = nn.Embedding.from_pretrained(src_embeddings)
     self._tgt_emb = nn.Embedding.from_pretrained(mt_embeddings)
 
-    self._src_enc = EncoderRNN(self._emb_dim, hidden_size, dropout_p)
-    self._tgt_enc = EncoderRNN(self._emb_dim, hidden_size, dropout_p)
+    features_size = 0
 
-    attn_temperature = (1 / (2 * hidden_size)) ** 0.5
-    self._attn = ScaledDotProductAttention(attn_temperature)
+    if hidden_size > 0:
+      self._src_enc = EncoderRNN(self._emb_dim, hidden_size, dropout_p)
+      self._tgt_enc = EncoderRNN(self._emb_dim, hidden_size, dropout_p)
 
-    features_size = 4 * hidden_size
-    if self_attn:
-      features_size += 2 * hidden_size
+      attn_temperature = (1 / (2 * hidden_size)) ** 0.5
+      self._attn = ScaledDotProductAttention(attn_temperature)
+
+      features_size += 4 * hidden_size
+
+      if self_attn:
+        features_size += 2 * hidden_size
+    else:
+      assert not self_attn
+      assert not use_confidence
 
     self._use_confidence = use_confidence
     if use_confidence:
@@ -265,6 +383,8 @@ class EstimatorRNN(nn.Module):
       features_size += self._baseline_converter._features_size
 
     self._crf = CRF(features_size, output_size)
+    self._out = nn.Linear(features_size, output_size)
+    self._loss = nn.CrossEntropyLoss(ignore_index=PAD_TOKEN)
 
     self._predict_gaps = predict_gaps
     if predict_gaps:
@@ -306,33 +426,34 @@ class EstimatorRNN(nn.Module):
     max_src_len, batch_len = src.shape
     max_tgt_len = mt.shape[0]
 
-    device = src.device
+    features = []
 
-    src_emb = torch.empty(max_src_len, batch_len, self._emb_dim).to(device) # shape (SRC, N, EMB)
-    src_emb[src >= 0] = self._src_emb(src[src >= 0])
-    if (src < 0).any():
-      src_emb[src < 0] = self._zero_emb.to(device)
-    src_features = self._src_enc(src_emb, training=training).transpose(0, 1) # shape (SRC, N, HIDDEN)
+    if self._hidden_size > 0:
+      src_emb = torch.empty(max_src_len, batch_len, self._emb_dim).to(device) # shape (SRC, N, EMB)
+      src_emb[src >= 0] = self._src_emb(src[src >= 0])
+      if (src < 0).any():
+        src_emb[src < 0] = self._zero_emb.to(device)
+      src_features = self._src_enc(src_emb, training=training).transpose(0, 1) # shape (SRC, N, HIDDEN)
 
-    tgt_emb = torch.empty(max_tgt_len, batch_len, self._emb_dim).to(device) # shape (N, MT, EMB)
-    tgt_emb[mt >= 0] = self._tgt_emb(mt[mt >= 0])
-    if (mt < 0).any():
-      tgt_emb[mt < 0] = self._zero_emb.to(device)
-    tgt_features = self._tgt_enc(tgt_emb, training=training).transpose(0, 1) # shape (N, MT, HIDDEN)
+      tgt_emb = torch.empty(max_tgt_len, batch_len, self._emb_dim).to(device) # shape (N, MT, EMB)
+      tgt_emb[mt >= 0] = self._tgt_emb(mt[mt >= 0])
+      if (mt < 0).any():
+        tgt_emb[mt < 0] = self._zero_emb.to(device)
+      tgt_features = self._tgt_enc(tgt_emb, training=training).transpose(0, 1) # shape (N, MT, HIDDEN)
 
-    features = [
-      tgt_features,
-    ]
 
-    attn_mask = torch.zeros(batch_len, len(mt), len(src),
-                            dtype=torch.uint8, device=device) # shape (N, MT, SRC)
-    if (src == PAD_TOKEN).any():
-      attn_mask[:] = (src == PAD_TOKEN).transpose(0, 1).unsqueeze(1)
-    context, align = self._attn(tgt_features,
-                                src_features,
-                                src_features,
-                                attn_mask) # shape (N, MT, EMB), (N, MT, SRC)
-    features.append(context)
+      features.append(tgt_features)
+
+      attn_mask = torch.zeros(batch_len, len(mt), len(src),
+                              dtype=torch.uint8, device=device) # shape (N, MT, SRC)
+      for i in range(batch_len):
+        attn_mask[i,:,:,] = (src[:,i] != PAD_TOKEN)
+
+      context, align = self._attn(tgt_features,
+                                  src_features,
+                                  src_features,
+                                  attn_mask) # shape (N, MT, EMB), (N, MT, SRC)
+      features.append(context)
 
     if self._use_confidence:
       topk, _ = torch.topk(align, 2, dim=2) # shape (N, MT, 2)
@@ -363,7 +484,7 @@ class EstimatorRNN(nn.Module):
       features.append(baseline_features.transpose(0, 1))
 
     features = torch.cat(features, dim=2) # shape (N, MT, FEATS)
-    return features.transpose(0, 1), align # shape (MT, N, FEATS), (N, MT, SRC)
+    return features.transpose(0, 1), None # shape (MT, N, FEATS), (,)
 
   def loss(self, src, src_inds, mt, mt_inds, aligns, src_tags=None, word_tags=None, 
            gap_tags=None, **kwargs):
@@ -393,7 +514,7 @@ class EstimatorRNN(nn.Module):
 
     with torch.no_grad():
       src_tags = torch.ones_like(src)
-      word_tags = torch.ones((len(mt),) + mt.shape[1:])
+      word_tags = torch.ones_like(mt)
       gap_tags = torch.ones((mt_inds.max() + 2,) + mt.shape[1:])
 
       features, align = self.forward(src, mt, **kwargs)
@@ -405,7 +526,7 @@ class EstimatorRNN(nn.Module):
 
         expanded_tags, _ = self._crf.label(features[:tokens_len,i,:])
         for j in range(mt_len):
-          word_tags[j, i] = (expanded_tags[mt_inds[:tokens_len, i] == j] > 0).all()
+          word_tags[j, i] = (expanded_tags[mt_inds[:tokens_len, i] == j] == 1).all()
         for i_src, i_mt in aligns[:, i]:
           if i_mt == -1:
             break

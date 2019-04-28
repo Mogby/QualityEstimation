@@ -5,10 +5,10 @@ import torch
 
 from tqdm import tqdm
 from sklearn.metrics import f1_score
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim.lr_scheduler import StepLR
 
 
-def validate(val_loader, model):
+def validate(val_loader, model, do_print=False):
   with torch.no_grad():
     src_preds = []
     word_preds = []
@@ -33,6 +33,10 @@ def validate(val_loader, model):
                         batch['mt'], batch['mt_inds'], batch['aligns'], 
                         **kwargs)
 
+      if do_print and np.random.rand() > 0.9:
+        print(word_pred[:,0])
+        print(batch['word_tags'][:,0])
+
       src_preds.append(src_pred[src_mask].cpu().numpy())
       word_preds.append(word_pred[word_mask].cpu().numpy())
       gap_preds.append(gap_pred[gap_mask].cpu().numpy())
@@ -48,9 +52,15 @@ def validate(val_loader, model):
     }
 
     for token, (preds, truths) in scores.items():
-      f1_bad, f1_ok = f1_score(np.concatenate(preds),
-                               np.concatenate(truths),
-                               average=None)
+      try:
+        f1_bad, f1_ok = f1_score(np.concatenate(preds),
+                                 np.concatenate(truths),
+                                 average=None)
+      except:
+        f1_ok = f1_score(np.concatenate(preds),
+                         np.concatenate(truths),
+                         average=None)
+        f1_bad = 0.
       scores[token] = {
         'f1_ok': f1_ok,
         'f1_bad': f1_bad,
@@ -62,10 +72,13 @@ def validate(val_loader, model):
 
 def train(train_loader, val_loader, model, optimizer, n_epochs,
           validate_every=5, save_dir=None):
-  scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=5)
+  # scheduler = StepLR(optimizer, step_size=1, gamma=0.1)
   loss_hist = []
   for epoch in range(n_epochs):
     print(f'Epoch {epoch+1}')
+
+    # scheduler.step()
+
     epoch_loss = 0
     for batch in tqdm(train_loader):
       loss = model.loss(**batch)
@@ -81,10 +94,10 @@ def train(train_loader, val_loader, model, optimizer, n_epochs,
 
     if (epoch + 1) % validate_every == 0:
       print('Validating')
+      scores = validate(train_loader, model, do_print=True)
+      print('train_scores =', scores)
       scores = validate(val_loader, model)
       print('scores =', scores)
-
-    scheduler.step(scores['word']['mul'])
 
     if save_dir is not None:
       save_dict = {
