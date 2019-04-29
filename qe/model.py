@@ -2,8 +2,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import sys
-sys.path.append('../../OpenNMT-py/')
-sys.path.append('../OpenNMT-py/')
+sys.path.append('open-nmt/')
 import onmt
 
 # from onmt.encoders import TransformerEncoder
