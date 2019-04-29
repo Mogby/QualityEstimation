@@ -1,6 +1,15 @@
 import numpy as np
 import torch
 import torch.nn as nn
+import sys
+sys.path.append('../../OpenNMT-py/')
+sys.path.append('../OpenNMT-py/')
+import onmt
+
+# from onmt.encoders import TransformerEncoder
+from onmt.modules import Embeddings
+from onmt.encoders.encoder import EncoderBase
+from onmt.encoders.transformer import TransformerEncoderLayer
 
 from pytorch_pretrained_bert import BertModel
 
@@ -8,6 +17,40 @@ from .embedding import PAD_TOKEN
 
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+# TODO make sure all tensors are on GPU
+# TODO change to open-nmt attention
+
+#borrowed from http://opennmt.net/OpenNMT-py/_modules/onmt/encoders/transformer.html#TransformerEncoder
+# TODO check whether dropout is turning off
+class Transformer(EncoderBase):
+
+  def __init__(self, num_layers, d_model, heads, d_ff, dropout,
+               max_relative_positions):
+    super(Transformer, self).__init__()
+
+    self.transformer = nn.ModuleList(
+      [TransformerEncoderLayer(
+        d_model, heads, d_ff, dropout,
+        max_relative_positions=max_relative_positions)
+        for i in range(num_layers)])
+    self.layer_norm = nn.LayerNorm(d_model, eps=1e-6)
+
+  def forward(self, emb, mask):
+    '''
+    :param emb: (LEN, B, EMBED_DIM)
+    :param mask: (LEN, B)
+    :return: (SRC, B, HIDDEN)
+    '''
+    self._check_args(emb, None)
+
+    out = emb.transpose(0, 1).contiguous() # (B, LEN, EMBED_DIM)
+    mask = mask.transpose(0, 1).contiguous().unsqueeze(1) # (B, 1, LEN)
+    # Run the forward pass of every layer of the tranformer.
+    for layer in self.transformer:
+      out = layer(out, mask)
+    out = self.layer_norm(out)
+
+    return out.transpose(0, 1).contiguous()
 
 
 # Compute log sum exp in a numerically stable way for the forward algorithm
@@ -206,6 +249,7 @@ class BaselineFeatureConverter(nn.Module):
       ).to(device)
 
   def forward(self, features):
+    # TODO: move all tonsors to device
     '''
     Converts baseline features to one-hot.
 
@@ -213,7 +257,7 @@ class BaselineFeatureConverter(nn.Module):
     :return: Batch of converted features of shape (N, L)
     '''
     N, K = features.shape
-    features = features.view(-1, K)
+    features = features.view(-1, K).to(device)
     converted = []
     for i in range(self._num_features):
       column = features[:, i]
@@ -232,7 +276,11 @@ class EstimatorRNN(nn.Module):
   def __init__(self, hidden_size, src_embeddings, mt_embeddings,
                output_size=2, bert_features_size=0, baseline_vocab_sizes=None,
                predict_gaps=True, dropout_p=0.2, 
-               use_confidence=True, self_attn=True):
+               use_confidence=True, self_attn=True,
+               num_layers=2, heads=6, transformer_ff=2048,
+               max_relative_positions=0):
+    """embed size should be divisible by heads number"""
+    # TODO change heads count closer to 8
     super(EstimatorRNN, self).__init__()
 
     self._hidden_size = hidden_size
@@ -241,10 +289,30 @@ class EstimatorRNN(nn.Module):
     self._emb_dim = src_embeddings.shape[1]
     assert mt_embeddings.shape[1] == self._emb_dim
 
-    self._src_emb = nn.Embedding.from_pretrained(src_embeddings)
-    self._tgt_emb = nn.Embedding.from_pretrained(mt_embeddings)
+    # self._src_emb = nn.Embedding.from_pretrained(src_embeddings)
+    # self._tgt_emb = nn.Embedding.from_pretrained(mt_embeddings)
+    src_vocab_size = src_embeddings.shape[0]
+    tgt_vocab_size = mt_embeddings.shape[0]
+    self._src_out_of_vocab = 0
+    self._tgt_out_of_vocab = 0
+    self._src_emb = Embeddings(word_vec_size=self._emb_dim,
+                               word_vocab_size=src_vocab_size,
+                               word_padding_idx=None,
+                               position_encoding=True).to(device)
+    self._src_emb.word_lut.weight.data.copy_(src_embeddings)
+    self._tgt_emb = Embeddings(word_vec_size=self._emb_dim,
+                               word_vocab_size=tgt_vocab_size,
+                               word_padding_idx=None,
+                               position_encoding=True).to(device)
+    self._tgt_emb.word_lut.weight.data.copy_(mt_embeddings)
 
-    self._src_enc = EncoderRNN(self._emb_dim, hidden_size, dropout_p)
+
+    # self._src_enc = EncoderRNN(self._emb_dim, hidden_size, dropout_p)
+
+    self._src_enc = Transformer(num_layers, self._emb_dim, heads,
+                                transformer_ff, dropout_p,
+                                max_relative_positions)
+
     self._tgt_enc = EncoderRNN(self._emb_dim, hidden_size, dropout_p)
 
     attn_temperature = (1 / (2 * hidden_size)) ** 0.5
@@ -303,19 +371,27 @@ class EstimatorRNN(nn.Module):
     bert_features: shape (MT, N, BERT)
     baseline_features: shape (MT, N, BASELINE)
     '''
+    """Since the onmt Embedding layer inputs cannot be broadcasted
+        we have to add additional (-1) embedding
+    """
     max_src_len, batch_len = src.shape
     max_tgt_len = mt.shape[0]
 
     device = src.device
-
-    src_emb = torch.empty(max_src_len, batch_len, self._emb_dim).to(device) # shape (SRC, N, EMB)
-    src_emb[src >= 0] = self._src_emb(src[src >= 0])
+    # src_emb = torch.empty(max_src_len, batch_len, self._emb_dim).to(device) # shape (SRC, N, EMB)
+    src_to_embed = src
+    src_to_embed[src_to_embed < 0] = self._src_out_of_vocab
+    src_emb = self._src_emb(src_to_embed.unsqueeze(2))
     if (src < 0).any():
       src_emb[src < 0] = self._zero_emb.to(device)
-    src_features = self._src_enc(src_emb, training=training).transpose(0, 1) # shape (SRC, N, HIDDEN)
 
-    tgt_emb = torch.empty(max_tgt_len, batch_len, self._emb_dim).to(device) # shape (N, MT, EMB)
-    tgt_emb[mt >= 0] = self._tgt_emb(mt[mt >= 0])
+    mask = src.data.eq(PAD_TOKEN)
+    src_features = self._src_enc(src_emb, mask).transpose(0, 1) # shape (N, SRC, HIDDEN)
+
+    # tgt_emb = torch.empty(max_tgt_len, batch_len, self._emb_dim).to(device) # shape (MT, N, EMB)
+    mt_to_embed = mt
+    mt_to_embed[mt_to_embed < 0] = self._tgt_out_of_vocab
+    tgt_emb = self._tgt_emb(mt_to_embed.unsqueeze(2))
     if (mt < 0).any():
       tgt_emb[mt < 0] = self._zero_emb.to(device)
     tgt_features = self._tgt_enc(tgt_emb, training=training).transpose(0, 1) # shape (N, MT, HIDDEN)
@@ -326,7 +402,7 @@ class EstimatorRNN(nn.Module):
 
     attn_mask = torch.zeros(batch_len, len(mt), len(src),
                             dtype=torch.uint8, device=device) # shape (N, MT, SRC)
-    if (src == PAD_TOKEN).any():
+    if (src == PAD_TOKEN).any(): #??? < 0 
       attn_mask[:] = (src == PAD_TOKEN).transpose(0, 1).unsqueeze(1)
     context, align = self._attn(tgt_features,
                                 src_features,
