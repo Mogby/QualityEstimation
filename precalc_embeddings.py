@@ -29,7 +29,7 @@ def main():
   vocab = []
   for fname in args.files:
     print(f'Reading {fname}...')
-    with open(fname, 'r') as f:
+    with open(fname, 'r', encoding='utf-8') as f:
       for line in f:
         for word in line.split():
           vocab.extend(tokenizer.tokenize(word))

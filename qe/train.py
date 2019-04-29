@@ -29,13 +29,7 @@ def validate(val_loader, model, do_print=False):
       if 'baseline_features' in batch:
         kwargs['baseline_features'] = batch['baseline_features']
       src_pred, word_pred, gap_pred = \
-          model.predict(batch['src'], batch['src_inds'],
-                        batch['mt'], batch['mt_inds'], batch['aligns'], 
-                        **kwargs)
-
-      if do_print and np.random.rand() > 0.9:
-        print(word_pred[:,0])
-        print(batch['word_tags'][:,0])
+          model.predict(batch['src'], batch['mt'], batch['aligns'], **kwargs)
 
       src_preds.append(src_pred[src_mask].cpu().numpy())
       word_preds.append(word_pred[word_mask].cpu().numpy())

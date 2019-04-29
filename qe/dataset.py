@@ -17,53 +17,33 @@ BAD_TOKEN = 'BAD'
 class QEDataset(Dataset):
 
   def __init__(self, name, src_tokenizer, mt_tokenizer, use_tags=True,
-               use_bert_features=False, use_baseline=False, data_dir=None):
+               data_dir=None):
     if data_dir is None:
       data_dir = name
 
-    self._src, self._src_inds = self._read_text(
+    self._src = self._read_text(
       os.path.join(data_dir, f'{name}.src'),
       src_tokenizer
     )
-    self._mt, self._mt_inds = self._read_text(
+    self._mt = self._read_text(
       os.path.join(data_dir, f'{name}.mt'),
       mt_tokenizer
     )
 
     self._use_tags = use_tags
-    if use_tags:
-      self._word_tags, self._gap_tags = \
-          self._read_tags(os.path.join(data_dir, f'{name}.tags'), True)
-      src_tag_exts = ['source_tags', 'src_tags']
-      for ext in src_tag_exts:
-        src_tag_file = os.path.join(data_dir, f'{name}.{ext}')
-        if os.path.isfile(src_tag_file):
-          break
-      self._src_tags = \
-          self._read_tags(src_tag_file, False)
+    if self._use_tags:
+      self._src_tags = self._read_tags(
+        os.path.join(data_dir, f'{name}.source_tags'),
+        False
+      )
+      self._word_tags, self._gap_tags = self._read_tags(
+        os.path.join(data_dir, f'{name}.tags'),
+        True
+      )
 
-    self._use_bert = use_bert_features
-    if use_bert_features:
-      bert_file = os.path.join(data_dir, f'{name}.bert')
-      print(f'Reading {bert_file}')
-      with open(bert_file, 'rb') as bert:
-        self._bert_features = pickle.load(bert)
-
-    self._use_baseline = use_baseline
-    if use_baseline:
-      baseline_file = os.path.join(data_dir, f'{name}.baseline')
-      print(f'Reading {baseline_file}')
-      with open(baseline_file, 'rb') as baseline:
-        baseline_dict = pickle.load(baseline)
-        self._baseline_features = baseline_dict['features']
-        self._baseline_vocab_sizes = baseline_dict['vocab_sizes']
-      for i, features in enumerate(self._baseline_features):
-        self._baseline_features[i] = self._expand_indices(
-            features, self._mt_inds[i]
-        )
-
-    aligns_file = os.path.join(data_dir, f'{name}.src-mt.alignments')
-    self._aligns = self._read_alignments(aligns_file)
+    self._aligns = self._read_alignments(
+      os.path.join(data_dir, f'{name}.src-mt.alignments')
+    )
 
     self._validate()
 
@@ -73,9 +53,7 @@ class QEDataset(Dataset):
   def __getitem__(self, idx):
     item = {
       'src': self._src[idx],
-      'src_inds': self._src_inds[idx],
       'mt': self._mt[idx],
-      'mt_inds': self._mt_inds[idx],
       'aligns': self._aligns[idx],
     }
 
@@ -84,16 +62,6 @@ class QEDataset(Dataset):
         'src_tags': self._src_tags[idx],
         'word_tags': self._word_tags[idx],
         'gap_tags': self._gap_tags[idx],
-      })
-
-    if self._use_bert:
-      item.update({
-        'bert_features': self._bert_features[idx]
-      })
-
-    if self._use_baseline:
-      item.update({
-        'baseline_features': self._baseline_features[idx]
       })
 
     return item
@@ -106,12 +74,6 @@ class QEDataset(Dataset):
       assert len(self._src_tags) == num_samples
       assert len(self._word_tags) == num_samples
       assert len(self._gap_tags) == num_samples
-    if self._use_bert:
-      assert len(self._bert_features) == num_samples
-    if self._use_baseline:
-      assert len(self._baseline_features) == num_samples
-      assert len(self._baseline_vocab_sizes) == \
-             len(self._baseline_features[0][0])
 
     for i in range(num_samples):
       src_len = len(self._src[i])
@@ -119,43 +81,22 @@ class QEDataset(Dataset):
 
       if self._use_tags:
         assert len(self._src_tags[i]) == src_len
-
         assert len(self._word_tags[i]) == mt_len
-        assert len(self._gap_tags[i]) <= mt_len + 1
-
-      if self._use_bert:
-        assert len(self._bert_features[i]) == mt_len
-
-      if self._use_baseline:
-        assert len(self._baseline_features[i]) == mt_len
+        assert len(self._gap_tags[i]) == mt_len + 1
 
   def _read_text(self, path, tokenizer):
     print('Reading', path)
 
-    num_unknown = 0
-
     samples = []
-    indices = []
     with open(path, 'r') as file:
       for line in file:
         sample = []
-        sample_inds = []
-
         for i, word in enumerate(line.split()):
-          new_tokens = tokenizer.tokenize(word)
-          new_tokens = tokenizer.convert_tokens_to_ids(new_tokens)
+          new_tokens = tokenizer.convert_tokens_to_ids([word])
           sample.extend(new_tokens)
-          sample_inds.extend([i] * len(new_tokens))
-
         samples.append(sample)
-        indices.append(sample_inds)
 
-    return samples, indices
-
-  def _expand_indices(self, arr, indices):
-    assert max(indices) + 1 == len(arr)
-    expanded = [arr[i] for i in indices]
-    return expanded
+    return samples
 
   def _read_tags(self, path, has_gaps):
     print('Reading', path)
@@ -176,14 +117,10 @@ class QEDataset(Dataset):
             raise ValueError('Unknown tag')
 
         if has_gaps:
-          word_tags.append(
-              self._expand_indices(line_tags[1::2], self._mt_inds[i])
-          )
+          word_tags.append(line_tags[1::2])
           gap_tags.append(line_tags[::2])
         else:
-          word_tags.append(
-              self._expand_indices(line_tags, self._src_inds[i])
-          )
+          word_tags.append(line_tags)
 
     if has_gaps:
       return word_tags, gap_tags

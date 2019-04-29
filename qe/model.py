@@ -242,11 +242,12 @@ class ONMTEstimator(nn.Module):
         len(src_embeddings),
         PAD_TOKEN,
     )
-    src_emb.word_lut.weight.data = src_embeddings.to(device)
-    src_emb.word_lut.weight.requires_grad = False
+    # src_emb.load_pretrained_vectors('./data/precalc/embeddings/en.pth')
+    # src_emb.word_lut.weight.data = src_embeddings.to(device)
+    # src_emb.word_lut.weight.requires_grad = False
 
     self._src_enc = onmt.encoders.RNNEncoder(
-        hidden_size=hidden_size, 
+        hidden_size=hidden_size,
         num_layers=1,
         rnn_type='LSTM',
         bidirectional=True,
@@ -259,8 +260,9 @@ class ONMTEstimator(nn.Module):
         len(mt_embeddings),
         PAD_TOKEN,
     )
-    mt_emb.word_lut.weight.data = mt_embeddings.to(device)
-    mt_emb.word_lut.weight.requires_grad = False
+    # mt_emb.load_pretrained_vectors('./data/precalc/embeddings/de.pth')
+    # mt_emb.word_lut.weight.data = mt_embeddings.to(device)
+    # mt_emb.word_lut.weight.requires_grad = False
 
     self._mt_enc = onmt.encoders.RNNEncoder(
         hidden_size=hidden_size,
@@ -286,15 +288,15 @@ class ONMTEstimator(nn.Module):
 
     features = []
 
-    nsrc = src.unsqueeze(2)
+    nsrc = src.clone().unsqueeze(2)
     nsrc[nsrc < 0] = 0
     src_feats = self._src_enc(nsrc)[1].transpose(0, 1)
-    nmt = mt.unsqueeze(2)
+    nmt = mt.clone().unsqueeze(2)
     nmt[nmt < 0] = 0
     mt_feats = self._mt_enc(nmt)[1].transpose(0, 1)
     features.append(mt_feats)
 
-    attn_mask = torch.empty(batch_len, max_mt_len, max_src_len, 
+    attn_mask = torch.empty(batch_len, max_mt_len, max_src_len,
                             dtype=torch.uint8, device=device)
     for i in range(batch_len):
       attn_mask[i,:,:] = (src[:,i] != PAD_TOKEN)
@@ -307,33 +309,31 @@ class ONMTEstimator(nn.Module):
 
     return scores.transpose(0, 1)
 
-  def loss(self, src, src_inds, mt, mt_inds, aligns, src_tags=None, 
+  def loss(self, src, mt, aligns, src_tags=None,
            word_tags=None, gap_tags=None, **kwargs):
     scores = self(src, mt, **kwargs)
+    # print(scores.shape)
+    # print(word_tags.shape)
     return self._loss(scores.transpose(1, 2), word_tags)
 
-  def predict(self, src, src_inds, mt, mt_inds, aligns, **kwargs):
+  def predict(self, src, mt, aligns, **kwargs):
     with torch.no_grad():
       src_tags = torch.ones_like(src)
       word_tags = torch.ones_like(mt)
-      gap_tags = torch.ones((mt_inds.max() + 2,) + mt.shape[1:])
+      gap_tags = torch.ones((mt.shape[0] + 1,) + mt.shape[1:])
 
       scores = self(src, mt)
 
       batch_len = src.shape[1]
       for i in range(batch_len):
-        tokens_len = (mt_inds[:,i] >= 0).sum()
-        mt_len = mt_inds[:,i].max() + 1
-
-        expanded_tags = (scores[:,i,1] > scores[:,i,0])
-        for j in range(mt_len):
-          word_tags[j, i] = \
-              (expanded_tags[mt_inds[:, i] == j] == 1).all()
+        word_tags[:, i] = (scores[:,i,1] > scores[:,i,0])
         for j_src, j_mt in aligns[:, i]:
           if j_mt == -1:
             break
           if word_tags[j_mt, i] == 0:
             src_tags[j_src, i] = 0
+
+      word_tags[mt == PAD_TOKEN] = -1
 
       return src_tags, word_tags, gap_tags
 
@@ -342,7 +342,7 @@ class EstimatorRNN(nn.Module):
 
   def __init__(self, hidden_size, src_embeddings, mt_embeddings,
                output_size=2, bert_features_size=0, baseline_vocab_sizes=None,
-               predict_gaps=True, dropout_p=0.2, 
+               predict_gaps=True, dropout_p=0.2,
                use_confidence=True, self_attn=True):
     super(EstimatorRNN, self).__init__()
 
@@ -352,8 +352,10 @@ class EstimatorRNN(nn.Module):
     self._emb_dim = src_embeddings.shape[1]
     assert mt_embeddings.shape[1] == self._emb_dim
 
-    self._src_emb = nn.Embedding.from_pretrained(src_embeddings)
-    self._tgt_emb = nn.Embedding.from_pretrained(mt_embeddings)
+    # self._src_emb = nn.Embedding.from_pretrained(src_embeddings)
+    # self._tgt_emb = nn.Embedding.from_pretrained(mt_embeddings)
+    self._src_emb = nn.Embedding(*src_embeddings.shape)
+    self._tgt_emb = nn.Embedding(*mt_embeddings.shape)
 
     features_size = 0
 

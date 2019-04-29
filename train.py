@@ -48,15 +48,11 @@ def main():
   collate = lambda data: qe_collate(data, device=device)
 
   train_ds = QEDataset('train', src_tokenizer, mt_tokenizer,
-                       use_baseline=args.use_baseline,
-                       use_bert_features=args.use_bert,
                        data_dir=args.train_path)
 
   train_loader = DataLoader(train_ds, shuffle=True, batch_size=args.batch_size,
                             collate_fn=collate)
   dev_ds = QEDataset('dev', src_tokenizer, mt_tokenizer,
-                     use_baseline=args.use_baseline,
-                     use_bert_features=args.use_bert,
                      data_dir=args.dev_path)
   dev_loader = DataLoader(dev_ds, shuffle=True, batch_size=args.batch_size,
                           collate_fn=collate)
