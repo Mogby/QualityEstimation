@@ -259,8 +259,8 @@ class QualityEstimator(nn.Module):
       self._attn.linear_values.weight.requires_grad = False
       self._attn.linear_query.weight.data.copy_(torch.eye(self._attn_dim))
       self._attn.linear_query.weight.requires_grad = False
-      self._attn.final_layer.weight.requires_grad = False
-      self._attn.final_layer.weight.data.copy_(torch.eye(self._attn_dim))
+      self._attn.final_linear.weight.requires_grad = False
+      self._attn.final_linear.weight.data.copy_(torch.eye(self._attn_dim))
 
     self._use_baseline = baseline_vocab_sizes is not None
     if self._use_baseline:
