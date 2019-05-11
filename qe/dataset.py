@@ -224,6 +224,7 @@ class BertQEDataset(Dataset):
     )
     print('Reading tags')
     tags = self._read_tags(os.path.join(data_dir, f'{name}.tags'))
+    self._orig_tags = tags#np.array(tags)
 
     print('Merging data')
     self._src, self._indices, self._segs, self._mt_mask, self._tags \
@@ -246,6 +247,7 @@ class BertQEDataset(Dataset):
       'segs': self._segs[idx],
       'mt_mask': self._mt_mask[idx],
       'tags': self._tags[idx],
+      'orig_tags': self._orig_tags[idx]
     }
 
   def _is_valid(self):

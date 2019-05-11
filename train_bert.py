@@ -109,6 +109,35 @@ def train_epochs(dataloader, model, n_epochs, validator,
 
   return loss_hist
 
+def train_bert(dataloader, model, n_epochs, validator,
+                 validate_every=5, learning_rate=0.):
+  optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+
+  loss_hist = []
+  for epoch in range(n_epochs):
+    epoch_loss = 0
+    print(f'Epoch {epoch+1}')
+    for batch in tqdm(dataloader):
+      loss = model.loss(batch['src'].to(device), batch['segs'].to(device), batch['indices'].to(device), torch.tensor(batch['orig_tags']).to(device))
+
+      optimizer.zero_grad()
+      loss.backward()
+      optimizer.step()
+
+      epoch_loss += loss.item()
+
+    avg_loss = epoch_loss / len(dataloader)
+    print(f'avg_loss = {avg_loss}')
+    loss_hist.append(avg_loss)
+
+    if (epoch + 1) % validate_every == 0:
+      #validate
+      pass
+
+    torch.save(model.state_dict(),
+               f'bert_tuned/bert_{epoch}.torch')
+
+  return loss_hist
 
 def main():
   parser = argparse.ArgumentParser()
@@ -117,24 +146,24 @@ def main():
   parser.add_argument('--dev-path', required=True, type=str)
   parser.add_argument('--num-epochs', default=4, type=int)
   parser.add_argument('--learning-rate', default=2e-5, type=float)
-  parser.add_argument('--batch-size', default=16, type=int)
+  parser.add_argument('--batch-size', default=1, type=int)
 
   args = parser.parse_args()
 
   print('Using device:', device)
 
   tokenizer = BertTokenizer.from_pretrained('bert-base-multilingual-cased')
-  dataset = BertQEDataset('train', args.train_path, tokenizer)
+  # dataset = BertQEDataset('train', args.train_path, tokenizer)
   dev_dataset = BertQEDataset('dev', args.dev_path, tokenizer)
   model = BertQE().to(device)
 
-  dataloader = DataLoader(dataset, args.batch_size, shuffle=True)
+  # dataloader = DataLoader(dataset, args.batch_size, shuffle=True)
   devloader = DataLoader(dev_dataset, args.batch_size, shuffle=False)
-  validator = lambda model: print(get_score_on_dataset(model, dataloader),
-                                  get_score_on_dataset(model, devloader),
-                                  sep='\n')
+  # validator = lambda model: print(get_score_on_dataset(model, dataloader),
+  #                                 get_score_on_dataset(model, devloader),
+  #                                 sep='\n')
 
-  loss = train_epochs(dataloader, model, args.num_epochs, validator,
+  loss = train_bert(devloader, model, args.num_epochs, validator=None,
                       validate_every=1, learning_rate=args.learning_rate)
 
 

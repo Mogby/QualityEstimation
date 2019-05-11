@@ -2,6 +2,7 @@ import numpy as np
 import onmt
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from pytorch_pretrained_bert import BertModel
 
@@ -386,3 +387,46 @@ class QualityEstimator(nn.Module):
       word_tags[mt == PAD_TOKEN] = -1
 
       return src_tags, word_tags, gap_tags
+
+
+class BertQE(nn.Module):
+  def __init__(self, bert_hidden_size=768):
+    super(BertQE, self).__init__()
+    self._bert_hidden_size = bert_hidden_size
+    self._bert = BertModel.from_pretrained('bert-base-multilingual-cased')
+    self._crf = CRF(2 * self._bert_hidden_size, 2)
+    self._linear_final = nn.Linear(2 * self._bert_hidden_size, 2)
+    self._cross_entropy = nn.CrossEntropyLoss()
+
+  def forward(self, src, segs, indices):
+    # (1, src + mt + 3)
+    bert_out, _ = self._bert(src, segs,
+                             output_all_encoded_layers=False)
+    # REWRITE FOR BATCH_SIZE != 1
+    features = []
+
+    mt_indices = indices[segs.to(torch.uint8)][:-1]
+    bert_mt_features = bert_out[segs.to(torch.uint8)][:-1]
+
+    max_idx = mt_indices.max()
+    for i in range(max_idx + 1):
+      idx_mask = mt_indices == i
+      features.append(torch.cat((bert_mt_features[idx_mask][0], bert_mt_features[idx_mask][-1],)))
+
+    features = torch.stack(features)
+    return features
+
+  def loss(self, src, segs, indices, orig_tags, use_crf=False):
+    # (1, src + mt + 3)
+    features = self(src, segs, indices)
+    if use_crf:
+      loss_func = lambda x: self._crf.log_likelihood(x, orig_tags[1::2])
+    else:
+      loss_func = lambda x: self._cross_entropy(self._linear_final(x), orig_tags[1::2])
+
+    loss = 0
+
+    batch_len = src.shape[0]
+    for i in range(batch_len):
+      loss -= loss_func(features)
+    return loss / batch_len
