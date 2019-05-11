@@ -278,7 +278,6 @@ class QualityEstimator(nn.Module):
     self._predict_gaps = predict_gaps
     if self._predict_gaps:
       self._gap_crf = CRF(self._features_size * 2, 2)
-    # self._out = nn.Linear(self._features_size, 2)
 
   def _extract_rnn_features(self, src, mt):
     max_src_len, batch_len = src.shape
