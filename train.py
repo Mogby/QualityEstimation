@@ -72,15 +72,6 @@ def main():
   else:
     bert_features_size = 0
 
-  '''model = EstimatorRNN(args.hidden_size,
-                       torch.tensor(src_tokenizer._embeddings),
-                       torch.tensor(mt_tokenizer._embeddings),
-                       predict_gaps=args.predict_gaps,
-                       self_attn=args.self_attention,
-                       bert_features_size=bert_features_size,
-                       baseline_vocab_sizes=baseline_vocab_sizes,
-                       use_confidence=args.use_confidence,
-                       dropout_p=0.).to(device)'''
   model = QualityEstimator(args.hidden_size,
                            torch.tensor(src_tokenizer._embeddings),
                            torch.tensor(mt_tokenizer._embeddings),
