@@ -5,7 +5,6 @@ import torch
 
 from tqdm import tqdm
 from sklearn.metrics import f1_score
-from torch.optim.lr_scheduler import StepLR
 
 
 def validate(val_loader, model, do_print=False):
@@ -66,13 +65,11 @@ def validate(val_loader, model, do_print=False):
 
 def train(train_loader, val_loader, model, optimizer, n_epochs,
           validate_every=5, save_dir=None):
-  # scheduler = StepLR(optimizer, step_size=1, gamma=0.1)
   loss_hist = []
   for epoch in range(n_epochs):
     print(f'Epoch {epoch+1}')
 
-    # scheduler.step()
-
+    model.train()
     epoch_loss = 0
     for batch in tqdm(train_loader):
       loss = model.loss(**batch)
@@ -86,6 +83,7 @@ def train(train_loader, val_loader, model, optimizer, n_epochs,
     print(f'avg_loss = {epoch_loss_avg}')
     loss_hist.append(epoch_loss_avg)
 
+    model.eval()
     if (epoch + 1) % validate_every == 0:
       print('Validating')
       scores = validate(train_loader, model, do_print=True)

@@ -17,7 +17,7 @@ BAD_TOKEN = 'BAD'
 class QEDataset(Dataset):
 
   def __init__(self, name, src_tokenizer, mt_tokenizer, use_tags=True,
-               data_dir=None):
+               use_baseline=False, use_bert=False, data_dir=None):
     if data_dir is None:
       data_dir = name
 
@@ -40,6 +40,22 @@ class QEDataset(Dataset):
         os.path.join(data_dir, f'{name}.tags'),
         True
       )
+
+    self._use_baseline = use_baseline
+    if self._use_baseline:
+      baseline_file = os.path.join(data_dir, f'{name}.baseline')
+      print('Reading', baseline_file)
+      with open(baseline_file, 'rb') as f:
+        baseline_dict = pickle.load(f)
+        self._baseline_features = baseline_dict['features']
+        self._baseline_vocab_sizes = baseline_dict['vocab_sizes']
+
+    self._use_bert = use_bert
+    if self._use_bert:
+      bert_file = os.path.join(data_dir, f'{name}.bert')
+      print('Reading', bert_file)
+      with open(bert_file, 'rb') as f:
+        self._bert_features = pickle.load(f)
 
     self._aligns = self._read_alignments(
       os.path.join(data_dir, f'{name}.src-mt.alignments')
@@ -64,6 +80,16 @@ class QEDataset(Dataset):
         'gap_tags': self._gap_tags[idx],
       })
 
+    if self._use_baseline:
+      item.update({
+        'baseline_features': self._baseline_features[idx],
+      })
+
+    if self._use_bert:
+      item.update({
+        'bert_features': self._bert_features[idx],
+      })
+
     return item
 
   def _validate(self):
@@ -83,6 +109,12 @@ class QEDataset(Dataset):
         assert len(self._src_tags[i]) == src_len
         assert len(self._word_tags[i]) == mt_len
         assert len(self._gap_tags[i]) == mt_len + 1
+
+      if self._use_baseline:
+        assert len(self._baseline_features[i]) == mt_len
+
+      if self._use_bert:
+        assert len(self._bert_features[i]) == mt_len
 
   def _read_text(self, path, tokenizer):
     print('Reading', path)

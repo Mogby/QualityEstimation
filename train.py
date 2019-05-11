@@ -9,7 +9,7 @@ from torch.utils.data import random_split, DataLoader
 
 from qe.dataset import QEDataset, qe_collate
 from qe.embedding import Tokenizer
-from qe.model import EstimatorRNN, ONMTEstimator
+from qe.model import device, QualityEstimator
 from qe.train import train
 
 
@@ -31,8 +31,9 @@ def main():
   parser.add_argument('--use-bert', action='store_true')
   parser.add_argument('--use-baseline', action='store_true')
   parser.add_argument('--self-attention', action='store_true')
-  parser.add_argument('--hidden-size', default=150, type=int)
+  parser.add_argument('--hidden-size', default=300, type=int)
   parser.add_argument('--use-confidence', action='store_true')
+  parser.add_argument('--use-transformer', action='store_true')
   args = parser.parse_args()
 
   print('Reading src embeddings')
@@ -42,25 +43,30 @@ def main():
   mt_tokenizer = Tokenizer(args.mt_embeddings,
           bert_tokenization=args.bert_tokens)
 
-  device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
   print(f'Using \'{device}\' device.')
 
   collate = lambda data: qe_collate(data, device=device)
 
   train_ds = QEDataset('train', src_tokenizer, mt_tokenizer,
+                       use_baseline=args.use_baseline,
+                       use_bert=args.use_bert,
                        data_dir=args.train_path)
-
   train_loader = DataLoader(train_ds, shuffle=True, batch_size=args.batch_size,
                             collate_fn=collate)
+
   dev_ds = QEDataset('dev', src_tokenizer, mt_tokenizer,
+                     use_baseline=args.use_baseline,
+                     use_bert=args.use_bert,
                      data_dir=args.dev_path)
   dev_loader = DataLoader(dev_ds, shuffle=True, batch_size=args.batch_size,
                           collate_fn=collate)
+
 
   if args.use_baseline:
     baseline_vocab_sizes = dev_ds._baseline_vocab_sizes
   else:
     baseline_vocab_sizes = None
+
   if args.use_bert:
     bert_features_size = 768 if args.bert_tokens else 2 * 768
   else:
@@ -75,12 +81,16 @@ def main():
                        baseline_vocab_sizes=baseline_vocab_sizes,
                        use_confidence=args.use_confidence,
                        dropout_p=0.).to(device)'''
-  model = ONMTEstimator(args.hidden_size,
-                        torch.tensor(src_tokenizer._embeddings),
-                        torch.tensor(mt_tokenizer._embeddings)).to(device)
+  model = QualityEstimator(args.hidden_size,
+                           torch.tensor(src_tokenizer._embeddings),
+                           torch.tensor(mt_tokenizer._embeddings),
+                           baseline_vocab_sizes=baseline_vocab_sizes,
+                           bert_features_size=bert_features_size,
+                           transformer_encoder=args.use_transformer,
+                           predict_gaps=args.predict_gaps).to(device)
 
   optimizer = optim.Adadelta(model.parameters(), lr=args.learning_rate)
-  train(dev_loader, dev_loader, model, optimizer, n_epochs=args.num_epochs,
+  train(train_loader, dev_loader, model, optimizer, n_epochs=args.num_epochs,
         validate_every=args.validate_every, save_dir=args.checkpoint_dir)
 
 

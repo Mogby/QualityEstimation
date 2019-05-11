@@ -9,6 +9,7 @@ from .embedding import PAD_TOKEN
 
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+# device = torch.device('cpu')
 
 
 # Compute log sum exp in a numerically stable way for the forward algorithm
@@ -163,22 +164,6 @@ class ScaledDotProductAttention(nn.Module):
     return attention, weights
 
 
-class EncoderRNN(nn.Module):
-
-  def __init__(self, embedding_dim, hidden_size, dropout_p=0.2):
-    super(EncoderRNN, self).__init__()
-    self._hidden_size = hidden_size
-    self._dropout = nn.Dropout(p=dropout_p)
-    self._gru = nn.GRU(embedding_dim, hidden_size, bidirectional=True)
-
-  def forward(self, input, training=True):
-    if training:
-      input = self._dropout(input)
-
-    output, hidden = self._gru(input)
-    return output
-
-
 class BaselineFeatureConverter(nn.Module):
   '''
   Converts categorial baseline features to one-hot vectors.
@@ -228,93 +213,192 @@ class BaselineFeatureConverter(nn.Module):
     return converted.reshape(N, -1)
 
 
-class ONMTEstimator(nn.Module):
+class QualityEstimator(nn.Module):
 
-  def __init__(self, hidden_size, src_embeddings, mt_embeddings):
-    super(ONMTEstimator, self).__init__()
+  def __init__(self, hidden_size, src_embeddings, mt_embeddings, dropout_p=0.1,
+               baseline_vocab_sizes=None, bert_features_size=0,
+               predict_gaps=True, transformer_encoder=False):
+    super(QualityEstimator, self).__init__()
 
-    self._hidden_size = hidden_size
-    self._emb_dim = src_embeddings.shape[1]
-    assert mt_embeddings.shape[1] == self._emb_dim
+    self._dropout = nn.Dropout(dropout_p)
+    self._features_size = 0
 
-    src_emb = onmt.modules.Embeddings(
-        self._emb_dim,
-        len(src_embeddings),
-        PAD_TOKEN,
-    )
-    # src_emb.load_pretrained_vectors('./data/precalc/embeddings/en.pth')
-    # src_emb.word_lut.weight.data = src_embeddings.to(device)
-    # src_emb.word_lut.weight.requires_grad = False
+    self._use_rnn = hidden_size > 0
+    self._transformer_encoder = transformer_encoder
+    if self._use_rnn:
+      self._emb_dim = src_embeddings.shape[1]
+      assert mt_embeddings.shape[1] == self._emb_dim
 
-    self._src_enc = onmt.encoders.RNNEncoder(
-        hidden_size=hidden_size,
-        num_layers=1,
-        rnn_type='LSTM',
-        bidirectional=True,
-        embeddings=src_emb,
-        dropout=0.
-    )
+      self._hidden_size = hidden_size
+      if self._transformer_encoder:
+        self._features_size += 2 * self._emb_dim # transformer output + attention
+      else:
+        self._features_size += 3 * hidden_size # rnn output + attention + self-attention
 
-    mt_emb = onmt.modules.Embeddings(
-        self._emb_dim,
-        len(mt_embeddings),
-        PAD_TOKEN,
-    )
-    # mt_emb.load_pretrained_vectors('./data/precalc/embeddings/de.pth')
-    # mt_emb.word_lut.weight.data = mt_embeddings.to(device)
-    # mt_emb.word_lut.weight.requires_grad = False
+      src_emb = onmt.modules.Embeddings(
+          self._emb_dim,
+          len(src_embeddings),
+          PAD_TOKEN,
+      )
+      src_emb.word_lut.weight.data.copy_(src_embeddings)
+      src_emb.word_lut.weight.requires_grad = False
 
-    self._mt_enc = onmt.encoders.RNNEncoder(
-        hidden_size=hidden_size,
-        num_layers=1,
-        rnn_type='LSTM',
-        bidirectional=True,
-        embeddings=mt_emb,
-        dropout=0.
-    )
+      if self._transformer_encoder:
+        self._src_enc = onmt.encoders.TransformerEncoder(
+            num_layers=2,
+            d_model=self._emb_dim,
+            heads=4,
+            d_ff=hidden_size,
+            dropout=dropout_p,
+            embeddings=src_emb,
+            max_relative_positions=200,
+        )
+      else:
+        self._src_enc = onmt.encoders.RNNEncoder(
+            hidden_size=hidden_size,
+            num_layers=1,
+            rnn_type='LSTM',
+            bidirectional=True,
+            embeddings=src_emb,
+        )
 
-    self._attn = onmt.modules.MultiHeadedAttention(
-        head_count=1,
-        model_dim=hidden_size,
-        dropout=0.,
-    )
+      mt_emb = onmt.modules.Embeddings(
+          self._emb_dim,
+          len(mt_embeddings),
+          PAD_TOKEN,
+      )
+      mt_emb.word_lut.weight.data.copy_(mt_embeddings)
+      mt_emb.word_lut.weight.requires_grad = False
 
-    self._out = nn.Linear(2*hidden_size, 2)
-    self._loss = nn.CrossEntropyLoss(ignore_index=PAD_TOKEN)
+      if self._transformer_encoder:
+        self._mt_enc = onmt.encoders.TransformerEncoder(
+            num_layers=2,
+            d_model=self._emb_dim,
+            heads=4,
+            d_ff=hidden_size,
+            dropout=dropout_p,
+            embeddings=mt_emb,
+            max_relative_positions=200,
+        )
+      else:
+        self._mt_enc = onmt.encoders.RNNEncoder(
+            hidden_size=hidden_size,
+            num_layers=1,
+            rnn_type='LSTM',
+            bidirectional=True,
+            embeddings=mt_emb,
+        )
 
-  def forward(self, src, mt, **kwargs):
+      self._attn_dim = self._emb_dim if self._transformer_encoder else hidden_size
+      self._attn = onmt.modules.MultiHeadedAttention(
+          head_count=1,
+          model_dim=self._attn_dim,
+      )
+      self._attn.linear_keys.weight.data.copy_(torch.eye(self._attn_dim))
+      self._attn.linear_keys.weight.requires_grad = False
+      self._attn.linear_values.weight.data.copy_(torch.eye(self._attn_dim))
+      self._attn.linear_values.weight.requires_grad = False
+      self._attn.linear_query.weight.data.copy_(torch.eye(self._attn_dim))
+      self._attn.linear_query.weight.requires_grad = False
+
+    self._use_baseline = baseline_vocab_sizes is not None
+    if self._use_baseline:
+      self._baseline_converter = BaselineFeatureConverter(baseline_vocab_sizes)
+      self._features_size += self._baseline_converter._features_size
+
+    self._use_bert = bert_features_size > 0
+    if self._use_bert:
+      self._features_size += bert_features_size
+
+    assert self._features_size > 0
+
+    self._crf = CRF(self._features_size, 2)
+
+    self._predict_gaps = predict_gaps
+    if self._predict_gaps:
+      self._gap_crf = CRF(self._features_size * 2, 2)
+    # self._out = nn.Linear(self._features_size, 2)
+
+  def _extract_rnn_features(self, src, mt):
     max_src_len, batch_len = src.shape
     max_mt_len = mt.shape[0]
-
-    features = []
 
     nsrc = src.clone().unsqueeze(2)
     nsrc[nsrc < 0] = 0
     src_feats = self._src_enc(nsrc)[1].transpose(0, 1)
+    src_feats = self._dropout(src_feats)
+
     nmt = mt.clone().unsqueeze(2)
     nmt[nmt < 0] = 0
     mt_feats = self._mt_enc(nmt)[1].transpose(0, 1)
-    features.append(mt_feats)
+    mt_feats = self._dropout(mt_feats)
 
     attn_mask = torch.empty(batch_len, max_mt_len, max_src_len,
                             dtype=torch.uint8, device=device)
-    for i in range(batch_len):
-      attn_mask[i,:,:] = (src[:,i] != PAD_TOKEN)
+    attn_mask[:] = (src != PAD_TOKEN).t().unsqueeze(1)
     context, _ = self._attn(src_feats, src_feats, mt_feats, attn_mask)
-    features.append(context)
 
-    scores = self._out(
-        torch.cat(features, dim=2)
-    )
+    rnn_features = [mt_feats, context]
 
-    return scores.transpose(0, 1)
+    if not self._transformer_encoder:
+      self_attn_mask = torch.empty(batch_len, max_mt_len, max_mt_len,
+                              dtype=torch.uint8, device=device)
+      self_attn_mask[:] = (mt != PAD_TOKEN).t().unsqueeze(1)
+      self_context, _ = self._attn(mt_feats, mt_feats, mt_feats, self_attn_mask)
+      rnn_features.append(self_context)
+
+    return torch.cat(rnn_features, dim=2)
+
+  def _convert_baseline_features(self, baseline_features):
+    N, M, K = baseline_features.shape
+    baseline_features = baseline_features.reshape(-1, K)
+    converted = self._baseline_converter(baseline_features).to(device)
+    return converted.reshape(N, M, -1)
+
+  def forward(self, src, mt, baseline_features=None, bert_features=None):
+    features = []
+
+    if self._use_rnn:
+      features.append(self._extract_rnn_features(src, mt))
+    if self._use_baseline:
+      assert baseline_features is not None
+      base_feats = self._convert_baseline_features(baseline_features)
+      features.append(base_feats.transpose(0, 1))
+    if self._use_bert:
+      features.append(bert_features.transpose(0, 1))
+
+    features = torch.cat(features, dim=2)
+
+    return features.transpose(0, 1)
+
+  def _get_gap_features(self, word_features):
+    zero_feats = torch.zeros_like(word_features[0]).unsqueeze(0)
+    padded = torch.cat((
+      zero_feats, word_features, zero_feats
+    ), dim=0)
+    return torch.cat((padded[:-1], padded[1:]), dim=2)
 
   def loss(self, src, mt, aligns, src_tags=None,
            word_tags=None, gap_tags=None, **kwargs):
-    scores = self(src, mt, **kwargs)
-    # print(scores.shape)
-    # print(word_tags.shape)
-    return self._loss(scores.transpose(1, 2), word_tags)
+    features = self(src, mt, **kwargs)
+
+    if self._predict_gaps:
+      gap_features = self._get_gap_features(features)
+    loss = 0
+
+    batch_len = mt.shape[1]
+    for i in range(batch_len):
+      mt_len = (mt[:,i] != PAD_TOKEN).sum()
+      loss -= self._crf.log_likelihood(
+          features[:mt_len,i],
+          word_tags[:mt_len,i]
+      )
+      if self._predict_gaps:
+        loss -= self._gap_crf.log_likelihood(
+            gap_features[:mt_len+1,i],
+            gap_tags[:mt_len+1,i]
+        )
+    return loss / batch_len
 
   def predict(self, src, mt, aligns, **kwargs):
     with torch.no_grad():
@@ -322,11 +406,17 @@ class ONMTEstimator(nn.Module):
       word_tags = torch.ones_like(mt)
       gap_tags = torch.ones((mt.shape[0] + 1,) + mt.shape[1:])
 
-      scores = self(src, mt)
+      features = self(src, mt, **kwargs)
+
+      if self._predict_gaps:
+        gap_features = self._get_gap_features(features)
 
       batch_len = src.shape[1]
       for i in range(batch_len):
-        word_tags[:, i] = (scores[:,i,1] > scores[:,i,0])
+        mt_len = (mt[:,i] != PAD_TOKEN).sum()
+        word_tags[:mt_len, i], _ = self._crf.label(features[:mt_len,i])
+        if self._predict_gaps:
+          gap_tags[:mt_len+1, i], _ = self._gap_crf.label(gap_features[:mt_len+1,i])
         for j_src, j_mt in aligns[:, i]:
           if j_mt == -1:
             break
@@ -491,6 +581,8 @@ class EstimatorRNN(nn.Module):
   def loss(self, src, src_inds, mt, mt_inds, aligns, src_tags=None, word_tags=None, 
            gap_tags=None, **kwargs):
     features, align = self.forward(src, mt, **kwargs)
+    scores = self._out(features)
+    return self._loss(scores.transpose(1, 2), word_tags)
 
     batch_len = src.shape[1]
     loss = 0
@@ -520,13 +612,15 @@ class EstimatorRNN(nn.Module):
       gap_tags = torch.ones((mt_inds.max() + 2,) + mt.shape[1:])
 
       features, align = self.forward(src, mt, **kwargs)
+      scores = self._out(features)
+      expanded_tags = (scores[:,:,1] > scores[:,:,0])
 
       batch_len = src.shape[1]
       for i in range(batch_len):
         tokens_len = (mt_inds[:,i] >= 0).sum()
         mt_len = mt_inds[:,i].max() + 1
 
-        expanded_tags, _ = self._crf.label(features[:tokens_len,i,:])
+        # expanded_tags, _ = self._crf.label(features[:tokens_len,i,:])
         for j in range(mt_len):
           word_tags[j, i] = (expanded_tags[mt_inds[:tokens_len, i] == j] == 1).all()
         for i_src, i_mt in aligns[:, i]:
